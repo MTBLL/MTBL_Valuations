@@ -1,0 +1,7 @@
+[project]
+name = "mtbl-valuations"
+version = "0.1.0"
+description = "MTBL Valuations after transform pipeline"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
