@@ -1,8 +1,12 @@
+from __future__ import annotations
+
+import sys
 from pathlib import Path
 
 import click
 
-from mtbl_valuations.utils import LOAD_OUTPUT_DIR, TRANSFORM_OUTPUT_DIR
+from mtbl_valuations.config import LOAD_OUTPUT_DIR, TRANSFORM_OUTPUT_DIR
+from mtbl_valuations.engine.pipeline import run_trp_valuation
 
 
 @click.group()
@@ -70,8 +74,8 @@ def hydrate(
     except KeyboardInterrupt:
         print("\n\n✗ Process interrupted by user\n", file=sys.stderr)
         sys.exit(130)
-    except Exception as e:
-        print(f"\n✗ Unexpected error: {e}\n", file=sys.stderr)
+    except Exception as exc:
+        print(f"\n✗ Unexpected error: {exc}\n", file=sys.stderr)
         import traceback
 
         traceback.print_exc()

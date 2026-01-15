@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import PositionPool
+from ..domain.models import PositionPool
 from .pools import rebuild_replacement_tier
 from .valuation import (
-    calc_means,
-    calc_stdevs,
     calc_raw_z,
     calc_normalized_z,
     get_categories,

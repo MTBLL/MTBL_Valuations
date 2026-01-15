@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
-
 from .budget import (
     allocate_pool_budget,
     allocate_position_budgets,
@@ -13,17 +11,6 @@ from .budget import (
     calc_league_budget,
 )
 from .iteration import iterate_to_convergence
-from .loader import load_batters, load_budget_config, load_league_settings, load_pitchers
-from .models import Player
-from .export_detailed import export_detailed_position_csvs
-from .output import (
-    validate_budget_balance,
-    validate_rlp_z_scores,
-    validate_tier_counts,
-    write_player_json,
-    write_position_summary_csv,
-    write_valuations_csv,
-)
 from .pools import (
     assign_primary_positions,
     build_position_pools,
@@ -31,6 +18,23 @@ from .pools import (
     build_util_pool,
 )
 from .valuation import calc_player_dollars
+from ..io.exports import export_detailed_position_csvs
+from ..io.loader import (
+    load_batters,
+    load_budget_config,
+    load_league_settings,
+    load_pitchers,
+)
+from ..io.writers import (
+    write_player_json,
+    write_position_summary_csv,
+    write_valuations_csv,
+)
+from ..validation.checks import (
+    validate_budget_balance,
+    validate_rlp_z_scores,
+    validate_tier_counts,
+)
 
 
 def run_trp_valuation(
@@ -234,7 +238,7 @@ def run_trp_valuation(
     print("\nPhase 10: Calculating player dollar values...")
     all_pools = hitter_pools + [sp_pool, rp_pool]
 
-    from .models import PositionValuation
+    from ..domain.models import PositionValuation
 
     for pool in all_pools:
         for player in pool.rostered_players + pool.replacement_players:

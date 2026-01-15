@@ -1,5 +1,7 @@
-from pathlib import Path
+from mtbl_valuations.config.paths import (
+    LOAD_OUTPUT_DIR,
+    RESOURCES_PATH,
+    TRANSFORM_OUTPUT_DIR,
+)
 
-RESOURCES_PATH = Path("/Users/Shared/BaseballHQ/resources")
-TRANSFORM_OUTPUT_DIR = RESOURCES_PATH / "transform"
-LOAD_OUTPUT_DIR = RESOURCES_PATH / "load"
+__all__ = ["RESOURCES_PATH", "TRANSFORM_OUTPUT_DIR", "LOAD_OUTPUT_DIR"]

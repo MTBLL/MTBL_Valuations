@@ -6,13 +6,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import (
+from ..domain.models import (
+    ComputedValues,
     HitterPlayer,
     HitterStats,
     PitcherPlayer,
     PitcherStats,
     Player,
-    ComputedValues,
 )
 
 

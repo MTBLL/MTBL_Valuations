@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import Player, PositionPool, Role, HitterPlayer, PitcherPlayer
-from .valuation import get_composite_metric, get_player_stat
+from ..domain.models import Player, PositionPool, Role
+from .valuation import get_composite_metric
 
 
 def assign_primary_positions(

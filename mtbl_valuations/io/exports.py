@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
 import pandas as pd
 
-from .models import PositionPool, Player
+from ..domain.models import PositionPool
 
 
 def export_hitter_position_csv(

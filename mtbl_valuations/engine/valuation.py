@@ -5,18 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
-
-from .models import (
-    HitterPlayer,
-    HitterStats,
-    PitcherPlayer,
-    PitcherStats,
-    Player,
-    PositionPool,
-    LeagueBudget,
-    Role,
-)
+from ..domain.models import HitterStats, PitcherStats, Player, PositionPool, Role
 
 
 def is_inverted(category: str) -> bool:

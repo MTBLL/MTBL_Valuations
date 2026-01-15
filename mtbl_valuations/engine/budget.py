@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import LeagueBudget, PositionPool
+from ..domain.models import LeagueBudget, PositionPool
 from .valuation import get_player_stat
 
 
