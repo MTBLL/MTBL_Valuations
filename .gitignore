@@ -2,3 +2,4 @@
 .venv/
 .uv_cache/
 .pytest_cache/
+.temp/

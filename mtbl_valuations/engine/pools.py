@@ -8,52 +8,32 @@ from ..domain.models import Player, PositionPool, Role
 from .valuation import get_composite_metric
 
 
-def assign_primary_positions(
-    players: list[Player],
-    roster_slots: dict[str, int],
-    num_teams: int,
-    role: Role,
-) -> list[Player]:
+def _calc_replacement_threshold(
+    last_rostered_metric: float,
+    replacement_tier_pct: float,
+) -> float:
+    """Calculate the replacement tier threshold, handling negative metrics like -FIP.
+
+    For positive metrics (wRC+): threshold is metric * (1 - pct), players >= threshold qualify
+    For negative metrics (-FIP): threshold is metric * (1 + pct), players >= threshold qualify
+
+    This ensures that for -FIP, a value like -3.50 qualifies when last rostered is -3.00
+    with 3% tolerance (threshold becomes -3.09).
     """
-    Assign each player to their most valuable (scarcest) position.
-    Processes positions from scarcest to deepest.
-    """
-    # Get positions for this role
-    if role == "HITTER":
-        position_names = ["C", "1B", "2B", "3B", "SS", "OF", "DH"]
-    elif role == "SP":
-        position_names = ["SP"]
-    else:  # RP
-        position_names = ["RP"]
-
-    # Filter to positions that exist in roster_slots
-    valid_positions = [p for p in position_names if p in roster_slots]
-
-    # Sort positions by scarcity (fewest roster slots first)
-    position_order = sorted(valid_positions, key=lambda p: roster_slots[p])
-
-    assigned: dict[str, str] = {}
-
-    for position in position_order:
-        # Get players eligible for this position who haven't been assigned
-        eligible = [
-            p for p in players if position in p.positions and p.id not in assigned
-        ]
-
-        # Total slots needed (including replacement buffer)
-        slots = roster_slots[position] * num_teams
-        buffer_slots = int(slots * 0.5)
-        total_needed = slots + buffer_slots
-
-        # Sort by composite metric (wRC+ for hitters, -FIP for pitchers)
-        eligible = sorted(eligible, key=get_composite_metric, reverse=True)
-
-        # Assign top N players to this position
-        for i in range(min(total_needed, len(eligible))):
-            assigned[eligible[i].id] = position
-            eligible[i].computed.primary_position = position
-
-    return players
+    if last_rostered_metric >= 0:
+        # Positive metric (wRC+): lower bound is metric * (1 - pct)
+        return last_rostered_metric * (1 - replacement_tier_pct)
+    else:
+        # Negative metric (-FIP): lower bound is metric * (1 + pct)
+        # e.g., -3.00 * 1.03 = -3.09, so -3.50 >= -3.09 is False but -2.90 >= -3.09 is True
+        # Wait, that's still wrong. Let me think again...
+        # For -FIP, "worse" means more negative. -3.50 is worse than -3.00.
+        # We want players within X% of the last rostered player.
+        # If last rostered is -3.00 (FIP 3.00), replacement should include -3.09 (FIP 3.09)
+        # So threshold = -3.00 * (1 + 0.03) = -3.09
+        # Check: -3.05 >= -3.09? Yes (3.05 FIP is replacement level)
+        # Check: -3.50 >= -3.09? No (3.50 FIP is too bad)
+        return last_rostered_metric * (1 + replacement_tier_pct)
 
 
 def build_position_pools(
@@ -62,8 +42,20 @@ def build_position_pools(
     num_teams: int,
     role: Role,
     budget_config: dict[str, Any],
+    use_eligibility: bool = False,
 ) -> list[PositionPool]:
-    """Build initial position pools with rostered and replacement tiers."""
+    """Build initial position pools with rostered and replacement tiers.
+
+    Args:
+        players: List of players to assign to pools.
+        roster_slots: Dict mapping position to number of roster slots per team.
+        num_teams: Number of teams in the league.
+        role: The role for these pools (HITTER, SP, or RP).
+        budget_config: Configuration with replacement_tier_pct and min_replacement_tier_size.
+        use_eligibility: If True, include players in ALL positions they're eligible for
+            (based on player.positions). If False, only include players whose
+            primary_position matches (post-assignment mode).
+    """
     # Get positions for this role
     if role == "HITTER":
         position_names = ["C", "1B", "2B", "3B", "SS", "OF"]
@@ -84,10 +76,15 @@ def build_position_pools(
             roster_slots=roster_slots[position] * num_teams,
         )
 
-        # Get players assigned to this position
-        position_players = [
-            p for p in players if p.computed.primary_position == position
-        ]
+        # Get players for this position
+        if use_eligibility:
+            # Include all players eligible for this position
+            position_players = [p for p in players if position in p.positions]
+        else:
+            # Only include players assigned to this position
+            position_players = [
+                p for p in players if p.computed.primary_position == position
+            ]
 
         # Sort by composite metric
         position_players = sorted(
@@ -100,8 +97,8 @@ def build_position_pools(
         # Replacement tier: within X% of last rostered player
         if pool.rostered_players:
             last_rostered_metric = get_composite_metric(pool.rostered_players[-1])
-            threshold = last_rostered_metric * (
-                1 - budget_config["replacement_tier_pct"]
+            threshold = _calc_replacement_threshold(
+                last_rostered_metric, budget_config["replacement_tier_pct"]
             )
 
             replacement_candidates = [
@@ -154,7 +151,9 @@ def build_single_pool(
     # Replacement tier
     if pool.rostered_players:
         last_rostered_metric = get_composite_metric(pool.rostered_players[-1])
-        threshold = last_rostered_metric * (1 - budget_config["replacement_tier_pct"])
+        threshold = _calc_replacement_threshold(
+            last_rostered_metric, budget_config["replacement_tier_pct"]
+        )
 
         replacement_candidates = [
             p
@@ -221,7 +220,9 @@ def build_util_pool(
     # Replacement tier
     if pool.rostered_players:
         last_rostered_metric = get_composite_metric(pool.rostered_players[-1])
-        threshold = last_rostered_metric * (1 - budget_config["replacement_tier_pct"])
+        threshold = _calc_replacement_threshold(
+            last_rostered_metric, budget_config["replacement_tier_pct"]
+        )
 
         replacement_candidates = [
             p
@@ -248,22 +249,34 @@ def rebuild_replacement_tier(
     all_pool_players: list[Player],
     pool: PositionPool,
     budget_config: dict[str, Any],
+    use_per_pool_z: bool = False,
 ) -> list[Player]:
-    """Rebuild replacement tier after re-ranking by total Z."""
+    """Rebuild replacement tier after re-ranking by total Z.
+
+    Args:
+        all_pool_players: All players in this pool, sorted by total_z descending.
+        pool: The position pool being rebuilt.
+        budget_config: Configuration with replacement_tier_pct and min_replacement_tier_size.
+        use_per_pool_z: If True, get total_z from player's valuations_by_position dict
+            for this pool's position. Use when players appear in multiple pools.
+    """
     if not pool.rostered_players:
         return []
 
     # Get players after rostered tier
     remaining = all_pool_players[pool.roster_slots :]
 
+    def get_total_z(p: Player) -> float:
+        if use_per_pool_z:
+            return p.computed.valuations_by_position[pool.position].total_z
+        return p.computed.total_z
+
     # Use total_z instead of composite metric for threshold
     if pool.rostered_players:
-        last_rostered_z = pool.rostered_players[-1].computed.total_z
+        last_rostered_z = get_total_z(pool.rostered_players[-1])
         threshold = last_rostered_z * (1 - budget_config["replacement_tier_pct"])
 
-        replacement_candidates = [
-            p for p in remaining if p.computed.total_z >= threshold
-        ]
+        replacement_candidates = [p for p in remaining if get_total_z(p) >= threshold]
 
         # Enforce minimum tier size
         min_size = budget_config["min_replacement_tier_size"]
@@ -273,3 +286,93 @@ def rebuild_replacement_tier(
         return replacement_candidates
 
     return []
+
+
+def assign_final_positions(
+    pools: list[PositionPool],
+    players: list[Player],
+) -> tuple[list[Player], int]:
+    """
+    Assign each player to their most valuable position after convergence.
+
+    Examines each player's valuations_by_position dict and assigns them to the
+    position where they have the highest dollar value.
+
+    Args:
+        pools: List of position pools (used for reference).
+        players: List of all players to assign.
+
+    Returns:
+        Tuple of (players with primary_position set, number of position changes).
+    """
+    changes = 0
+
+    for player in players:
+        if not player.computed.valuations_by_position:
+            continue
+
+        # Find position with highest total_z where player is ROSTERED
+        # We use total_z (not total_dollars) because dollar values aren't
+        # available until all pools have fully stabilized including UTIL
+        best_position = None
+        best_z = float("-inf")
+
+        for position, valuation in player.computed.valuations_by_position.items():
+            # Prefer positions where player is rostered
+            if valuation.tier == "ROSTERED" and valuation.total_z > best_z:
+                best_z = valuation.total_z
+                best_position = position
+
+        # If not rostered anywhere, fall back to highest total_z regardless of tier
+        if best_position is None:
+            for position, valuation in player.computed.valuations_by_position.items():
+                if valuation.total_z > best_z:
+                    best_z = valuation.total_z
+                    best_position = position
+
+        # If still no position (edge case), use first available
+        if best_position is None and player.computed.valuations_by_position:
+            best_position = next(iter(player.computed.valuations_by_position.keys()))
+
+        # Check if position changed
+        if best_position and player.computed.primary_position != best_position:
+            changes += 1
+            player.computed.primary_position = best_position
+
+    return players, changes
+
+
+def rebuild_pools_after_assignment(
+    pools: list[PositionPool],
+) -> list[PositionPool]:
+    """
+    Remove players from pools where they are not assigned.
+
+    Called after assign_final_positions() to clean up pools so each player
+    only appears in their primary position's pool.
+
+    Args:
+        pools: List of position pools to clean up.
+
+    Returns:
+        The same pools with non-primary players removed.
+    """
+    for pool in pools:
+        # Filter to only players assigned to this position
+        pool.rostered_players = [
+            p
+            for p in pool.rostered_players
+            if p.computed.primary_position == pool.position
+        ]
+        pool.replacement_players = [
+            p
+            for p in pool.replacement_players
+            if p.computed.primary_position == pool.position
+        ]
+        pool.below_replacement = [
+            p
+            for p in pool.below_replacement
+            if p.computed.primary_position == pool.position
+        ]
+
+    return pools

@@ -6,7 +6,8 @@
       "Bash(.venv/bin/python:*)",
       "Bash(python3:*)",
       "Bash(bc:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(python -m pytest:*)"
     ]
   }
 }

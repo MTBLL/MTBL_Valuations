@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -77,6 +77,7 @@ class Player(MTBLBaseModel):
     name: str
     team: str
     positions: list[str]
+    primary_position: str = ""  # Set during position assignment, defaults to empty
     role: Role
     stats: Union[HitterStats, PitcherStats, None] = None
     computed: ComputedValues = Field(default_factory=ComputedValues)
