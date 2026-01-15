@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from typing import List
 
 import pytest
+from typing_extensions import Any
 
+from mtbl_valuations.domain.models import HitterPlayer, PitcherPlayer, Player
 from mtbl_valuations.engine.budget import calc_league_budget
 from mtbl_valuations.engine.pipeline import run_trp_valuation
 from mtbl_valuations.io.loader import (
@@ -25,9 +28,9 @@ def fixtures_dir():
 
 
 @pytest.fixture
-def league_summary(fixtures_dir):
+def league_summary(league_file):
     """Load league summary fixture."""
-    with open(fixtures_dir / "league_10998_summary.json") as f:
+    with open(league_file) as f:
         return json.load(f)
 
 
@@ -88,9 +91,7 @@ def budget_config_file():
         },
     }
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(config, f)
         path = Path(f.name)
 
@@ -139,3 +140,31 @@ def league_budget(league_file, budget_config_file):
     league_settings = load_league_settings(league_file)
     budget_config = load_budget_config(budget_config_file)
     return calc_league_budget(league_settings, budget_config)
+
+
+@pytest.fixture
+def league_settings(league_file) -> dict[str, Any]:
+    """Load league settings from file."""
+    return load_league_settings(league_file)
+
+
+@pytest.fixture
+def batters(batters_file) -> List[HitterPlayer]:
+    """Load batters from file."""
+    return load_batters(batters_file)
+
+
+@pytest.fixture
+def pitchers(pitchers_file) -> List[PitcherPlayer]:
+    """Load pitchers from file."""
+    return load_pitchers(pitchers_file)
+
+
+@pytest.fixture
+def player_from_hitters(batters) -> List[Player]:
+    return [b.player for b in batters]
+
+
+@pytest.fixture
+def player_from_pitchers(pitchers) -> List[Player]:
+    return [p.player for p in pitchers]

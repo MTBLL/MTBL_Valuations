@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Literal, Union, TYPE_CHECKING
+
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     StatsType = Union["HitterStats", "PitcherStats"]
@@ -12,8 +13,13 @@ Role = Literal["HITTER", "SP", "RP"]
 Tier = Literal["ROSTERED", "REPLACEMENT", "BELOW_REPLACEMENT"]
 
 
-@dataclass
-class HitterStats:
+class MTBLBaseModel(BaseModel):
+    """Base model with shared config for domain types."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class HitterStats(MTBLBaseModel):
     """Hitter stat payload."""
 
     pa: float
@@ -27,8 +33,7 @@ class HitterStats:
     wrc_plus: float = 0.0  # Optional: used for sorting/diagnostics
 
 
-@dataclass
-class PitcherStats:
+class PitcherStats(MTBLBaseModel):
     """Pitcher stat payload."""
 
     outs: float  # Preferred representation; IP = outs / 3
@@ -40,8 +45,7 @@ class PitcherStats:
     fip: float = 0.0  # Optional: used for sorting/diagnostics
 
 
-@dataclass
-class PositionValuation:
+class PositionValuation(MTBLBaseModel):
     """Valuation for a specific position context."""
 
     position: str
@@ -53,22 +57,20 @@ class PositionValuation:
     tier: Tier
 
 
-@dataclass
-class ComputedValues:
+class ComputedValues(MTBLBaseModel):
     """Computed valuation fields."""
 
     primary_position: str = ""
-    raw_z: dict[str, float] = field(default_factory=dict)
-    normalized_z: dict[str, float] = field(default_factory=dict)
+    raw_z: dict[str, float] = Field(default_factory=dict)
+    normalized_z: dict[str, float] = Field(default_factory=dict)
     total_z: float = 0.0
-    dollar_values: dict[str, float] = field(default_factory=dict)
+    dollar_values: dict[str, float] = Field(default_factory=dict)
     total_dollars: float = 0.0
     tier: Tier = "BELOW_REPLACEMENT"
-    valuations_by_position: dict[str, "PositionValuation"] = field(default_factory=dict)
+    valuations_by_position: dict[str, "PositionValuation"] = Field(default_factory=dict)
 
 
-@dataclass
-class Player:
+class Player(MTBLBaseModel):
     """Shared identity + computed fields."""
 
     id: str
@@ -77,48 +79,44 @@ class Player:
     positions: list[str]
     role: Role
     stats: Union[HitterStats, PitcherStats, None] = None
-    computed: ComputedValues = field(default_factory=ComputedValues)
+    computed: ComputedValues = Field(default_factory=ComputedValues)
 
 
-@dataclass
-class HitterPlayer:
+class HitterPlayer(MTBLBaseModel):
     """Player + HitterStats."""
 
     player: Player
     stats: HitterStats
 
 
-@dataclass
-class PitcherPlayer:
+class PitcherPlayer(MTBLBaseModel):
     """Player + PitcherStats."""
 
     player: Player
     stats: PitcherStats
 
 
-@dataclass
-class PositionPool:
+class PositionPool(MTBLBaseModel):
     """Position pool with tiers and budget allocation."""
 
     position: str
     role: Role
     roster_slots: int
-    rostered_players: list[Player] = field(default_factory=list)
-    replacement_players: list[Player] = field(default_factory=list)
-    below_replacement: list[Player] = field(default_factory=list)
-    rostered_tier_means: dict[str, float] = field(default_factory=dict)
-    rostered_tier_stdevs: dict[str, float] = field(default_factory=dict)
-    rlp_archetype: dict[str, float] = field(default_factory=dict)
-    rlp_raw_z_avg: dict[str, float] = field(default_factory=dict)
-    category_budgets: dict[str, float] = field(default_factory=dict)
-    dollars_per_z: dict[str, float] = field(default_factory=dict)
-    total_pool_z: dict[str, float] = field(default_factory=dict)
-    production_share: dict[str, float] = field(default_factory=dict)
+    rostered_players: list[Player] = Field(default_factory=list)
+    replacement_players: list[Player] = Field(default_factory=list)
+    below_replacement: list[Player] = Field(default_factory=list)
+    rostered_tier_means: dict[str, float] = Field(default_factory=dict)
+    rostered_tier_stdevs: dict[str, float] = Field(default_factory=dict)
+    rlp_archetype: dict[str, float] = Field(default_factory=dict)
+    rlp_raw_z_avg: dict[str, float] = Field(default_factory=dict)
+    category_budgets: dict[str, float] = Field(default_factory=dict)
+    dollars_per_z: dict[str, float] = Field(default_factory=dict)
+    total_pool_z: dict[str, float] = Field(default_factory=dict)
+    production_share: dict[str, float] = Field(default_factory=dict)
     weighted_pa: float = 0.0
 
 
-@dataclass
-class LeagueBudget:
+class LeagueBudget(MTBLBaseModel):
     """League-wide budget structure."""
 
     total: float
@@ -126,6 +124,6 @@ class LeagueBudget:
     pitcher_budget: float
     sp_budget: float
     rp_budget: float
-    category_budgets: dict[str, dict[str, float]] = field(
+    category_budgets: dict[str, dict[str, float]] = Field(
         default_factory=lambda: {"hitter": {}, "sp": {}, "rp": {}}
     )

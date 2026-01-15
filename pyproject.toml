@@ -8,6 +8,7 @@ dependencies = [
     "click>=8.0.0",
     "numpy>=2.0.0",
     "pandas>=2.2.0",
+    "pydantic>=2.0.0",
 ]
 [build-system]
 requires = ["hatchling"]
@@ -16,6 +17,7 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "mypy>=1.15.0",
+    "pytest-cov>=5.0.0",
     "pytest>=8.3.5",
 ]
 
@@ -32,3 +34,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+[tool.coverage.run]
+omit = ["mtbl_valuations/__main__.py"]

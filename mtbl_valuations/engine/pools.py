@@ -20,7 +20,7 @@ def assign_primary_positions(
     """
     # Get positions for this role
     if role == "HITTER":
-        position_names = ["C", "1B", "2B", "3B", "SS", "OF"]
+        position_names = ["C", "1B", "2B", "3B", "SS", "OF", "DH"]
     elif role == "SP":
         position_names = ["SP"]
     else:  # RP
@@ -37,9 +37,7 @@ def assign_primary_positions(
     for position in position_order:
         # Get players eligible for this position who haven't been assigned
         eligible = [
-            p
-            for p in players
-            if position in p.positions and p.id not in assigned
+            p for p in players if position in p.positions and p.id not in assigned
         ]
 
         # Total slots needed (including replacement buffer)
@@ -48,9 +46,7 @@ def assign_primary_positions(
         total_needed = slots + buffer_slots
 
         # Sort by composite metric (wRC+ for hitters, -FIP for pitchers)
-        eligible = sorted(
-            eligible, key=get_composite_metric, reverse=True
-        )
+        eligible = sorted(eligible, key=get_composite_metric, reverse=True)
 
         # Assign top N players to this position
         for i in range(min(total_needed, len(eligible))):
@@ -158,9 +154,7 @@ def build_single_pool(
     # Replacement tier
     if pool.rostered_players:
         last_rostered_metric = get_composite_metric(pool.rostered_players[-1])
-        threshold = last_rostered_metric * (
-            1 - budget_config["replacement_tier_pct"]
-        )
+        threshold = last_rostered_metric * (1 - budget_config["replacement_tier_pct"])
 
         replacement_candidates = [
             p
@@ -219,9 +213,7 @@ def build_util_pool(
             seen_ids.add(player.id)
 
     # Sort by composite metric
-    util_candidates = sorted(
-        util_candidates, key=get_composite_metric, reverse=True
-    )
+    util_candidates = sorted(util_candidates, key=get_composite_metric, reverse=True)
 
     # Initial tier assignment
     pool.rostered_players = util_candidates[: pool.roster_slots]
@@ -229,9 +221,7 @@ def build_util_pool(
     # Replacement tier
     if pool.rostered_players:
         last_rostered_metric = get_composite_metric(pool.rostered_players[-1])
-        threshold = last_rostered_metric * (
-            1 - budget_config["replacement_tier_pct"]
-        )
+        threshold = last_rostered_metric * (1 - budget_config["replacement_tier_pct"])
 
         replacement_candidates = [
             p
