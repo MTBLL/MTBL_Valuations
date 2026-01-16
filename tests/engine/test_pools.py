@@ -10,10 +10,51 @@ from mtbl_valuations.engine.pools import (
     _calc_replacement_threshold,
     assign_final_positions,
     build_position_pools,
+    build_util_pool,
+    dedupe_multi_position_players,
     rebuild_pools_after_assignment,
     rebuild_replacement_tier_on_z,
 )
 from mtbl_valuations.engine.valuation import get_composite_metric
+
+
+def _make_test_player(
+    id: str,
+    name: str | None = None,
+    positions: list[str] | None = None,
+    wrc_plus: float = 100.0,
+    total_z: float | None = None,
+) -> Player:
+    """Create a test player with controlled attributes.
+
+    Args:
+        id: Player ID.
+        name: Player name (defaults to "Player {id}").
+        positions: List of eligible positions (defaults to ["SS"]).
+        wrc_plus: wRC+ value for composite metric sorting.
+        total_z: If provided, sets player.computed.total_z.
+    """
+    player = Player(
+        id=id,
+        name=name or f"Player {id}",
+        team="TST",
+        positions=positions or ["SS"],
+        role="HITTER",
+        stats=HitterStats(
+            pa=600,
+            ab=550,
+            r=80,
+            hr=20,
+            rbi=70,
+            sbn=10,
+            obp=0.340,
+            slg=0.460,
+            wrc_plus=wrc_plus,
+        ),
+    )
+    if total_z is not None:
+        player.computed.total_z = total_z
+    return player
 
 
 class TestBuildPositionPools:
@@ -170,7 +211,186 @@ class TestBuildPositionPools:
 
 
 class TestBuildUtilPool:
-    pass
+    """Tests for build_util_pool function."""
+
+    def test_build_util_pool_collects_replacement_and_below(self):
+        """Test that UTIL pool collects replacement-tier and below-replacement players."""
+        # Create SS pool players
+        ss_rostered_1 = _make_test_player(
+            "ss_r1", "SS Rostered 1", ["SS"], wrc_plus=140.0
+        )
+        ss_rostered_2 = _make_test_player(
+            "ss_r2", "SS Rostered 2", ["SS"], wrc_plus=130.0
+        )
+        ss_replacement = _make_test_player(
+            "ss_rep", "SS Replacement", ["SS"], wrc_plus=100.0
+        )
+        ss_below = _make_test_player("ss_below", "SS Below", ["SS"], wrc_plus=85.0)
+
+        # Create 2B pool players
+        second_rostered = _make_test_player(
+            "2b_r1", "2B Rostered", ["2B"], wrc_plus=135.0
+        )
+        second_replacement = _make_test_player(
+            "2b_rep", "2B Replacement", ["2B"], wrc_plus=105.0
+        )
+        second_below = _make_test_player("2b_below", "2B Below", ["2B"], wrc_plus=80.0)
+
+        # Create pure DH players (only eligible for DH/UTIL)
+        dh_star = _make_test_player("dh1", "DH Star", ["DH"], wrc_plus=150.0)
+        dh_avg = _make_test_player("dh2", "DH Average", ["DH"], wrc_plus=110.0)
+        dh_weak = _make_test_player("dh3", "DH Weak", ["DH"], wrc_plus=90.0)
+
+        # Build position pools with pre-assigned tiers
+        ss_pool = PositionPool(
+            position="SS",
+            role="HITTER",
+            roster_slots=2,
+            rostered_players=[ss_rostered_1, ss_rostered_2],
+            replacement_players=[ss_replacement],
+            below_replacement=[ss_below],
+        )
+
+        second_pool = PositionPool(
+            position="2B",
+            role="HITTER",
+            roster_slots=1,
+            rostered_players=[second_rostered],
+            replacement_players=[second_replacement],
+            below_replacement=[second_below],
+        )
+
+        hitter_pools = {"SS": ss_pool, "2B": second_pool}
+        pure_dh_players = [dh_star, dh_avg, dh_weak]
+        roster_slots = {"SS": 2, "2B": 1, "UTIL": 2}
+        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
+
+        # Build UTIL pool
+        util_pool = build_util_pool(
+            hitter_pools,
+            pure_dh_players,
+            roster_slots,
+            num_teams=1,
+            budget_config=budget_config,
+        )
+
+        # Verify UTIL pool structure
+        assert util_pool.position == "UTIL"
+        assert util_pool.role == "HITTER"
+        assert util_pool.roster_slots == 2  # 2 UTIL slots * 1 team
+
+        # Collect all player IDs in UTIL pool
+        util_all_ids = {
+            p.id
+            for p in util_pool.rostered_players
+            + util_pool.replacement_players
+            + util_pool.below_replacement
+        }
+
+        # Replacement and below-replacement from position pools should be in UTIL
+        assert "ss_rep" in util_all_ids, "SS replacement should be in UTIL pool"
+        assert "ss_below" in util_all_ids, "SS below-replacement should be in UTIL pool"
+        assert "2b_rep" in util_all_ids, "2B replacement should be in UTIL pool"
+        assert "2b_below" in util_all_ids, "2B below-replacement should be in UTIL pool"
+
+        # Pure DH players should be in UTIL
+        assert "dh1" in util_all_ids, "Pure DH star should be in UTIL pool"
+        assert "dh2" in util_all_ids, "Pure DH average should be in UTIL pool"
+        assert "dh3" in util_all_ids, "Pure DH weak should be in UTIL pool"
+
+        # Rostered players from position pools should NOT be in UTIL
+        assert "ss_r1" not in util_all_ids, "SS rostered should NOT be in UTIL pool"
+        assert "ss_r2" not in util_all_ids, "SS rostered should NOT be in UTIL pool"
+        assert "2b_r1" not in util_all_ids, "2B rostered should NOT be in UTIL pool"
+
+    def test_build_util_pool_sorts_by_wrc_plus(self):
+        """Test that UTIL pool is sorted by wrc_plus (composite metric)."""
+        # Create players with varied wrc_plus
+        p_high = _make_test_player("p_high", "High wRC+", ["DH"], wrc_plus=150.0)
+        p_mid = _make_test_player("p_mid", "Mid wRC+", ["SS"], wrc_plus=110.0)
+        p_low = _make_test_player("p_low", "Low wRC+", ["2B"], wrc_plus=90.0)
+
+        # Position pool with replacement players
+        ss_pool = PositionPool(
+            position="SS",
+            role="HITTER",
+            roster_slots=1,
+            rostered_players=[],
+            replacement_players=[p_mid],
+            below_replacement=[],
+        )
+
+        second_pool = PositionPool(
+            position="2B",
+            role="HITTER",
+            roster_slots=1,
+            rostered_players=[],
+            replacement_players=[p_low],
+            below_replacement=[],
+        )
+
+        hitter_pools = {"SS": ss_pool, "2B": second_pool}
+        pure_dh_players = [p_high]
+        roster_slots = {"UTIL": 2}
+        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
+
+        util_pool = build_util_pool(
+            hitter_pools,
+            pure_dh_players,
+            roster_slots,
+            num_teams=1,
+            budget_config=budget_config,
+        )
+
+        # Top 2 by wrc_plus should be rostered
+        rostered_ids = [p.id for p in util_pool.rostered_players]
+        assert rostered_ids == ["p_high", "p_mid"], "Should be sorted by wrc_plus desc"
+
+    def test_build_util_pool_deduplicates_players(self):
+        """Test that players appearing in multiple pools are only counted once in UTIL."""
+        # Multi-eligible player in replacement tier of both pools
+        multi_pos = _make_test_player(
+            "multi", "Multi Position", ["SS", "2B"], wrc_plus=100.0
+        )
+
+        ss_pool = PositionPool(
+            position="SS",
+            role="HITTER",
+            roster_slots=1,
+            rostered_players=[],
+            replacement_players=[multi_pos],
+            below_replacement=[],
+        )
+
+        second_pool = PositionPool(
+            position="2B",
+            role="HITTER",
+            roster_slots=1,
+            rostered_players=[],
+            replacement_players=[multi_pos],  # Same player object
+            below_replacement=[],
+        )
+
+        hitter_pools = {"SS": ss_pool, "2B": second_pool}
+        roster_slots = {"UTIL": 2}
+        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
+
+        util_pool = build_util_pool(
+            hitter_pools,
+            pure_dh_players=[],
+            roster_slots=roster_slots,
+            num_teams=1,
+            budget_config=budget_config,
+        )
+
+        # Player should only appear once
+        all_util_players = (
+            util_pool.rostered_players
+            + util_pool.replacement_players
+            + util_pool.below_replacement
+        )
+        assert len(all_util_players) == 1
+        assert all_util_players[0].id == "multi"
 
 
 class TestAssignFinalPositions:
@@ -195,6 +415,7 @@ class TestAssignFinalPositions:
             total_z=0.5,  # Lower Z
             total_dollars=15.0,
             tier="ROSTERED",  # Rostered
+            position_rank=5,
         )
 
         # 2B: Replacement but higher total_z
@@ -205,6 +426,7 @@ class TestAssignFinalPositions:
             total_z=1.0,  # Higher Z
             total_dollars=30.0,
             tier="REPLACEMENT",  # But only replacement level
+            position_rank=15,
         )
 
         pools: dict[str, PositionPool] = {}
@@ -238,6 +460,7 @@ class TestAssignFinalPositions:
             total_z=0.5,  # Lower Z
             total_dollars=15.0,
             tier="ROSTERED",
+            position_rank=3,
         )
 
         player.computed.valuations_by_position["2B"] = PositionValuation(
@@ -247,6 +470,7 @@ class TestAssignFinalPositions:
             total_z=0.7,  # Higher Z
             total_dollars=25.0,
             tier="ROSTERED",
+            position_rank=2,
         )
 
         # Create empty pools (not used but required by API)
@@ -310,33 +534,174 @@ class TestRebuildPools:
         assert "p2" in second_ids  # Still in 2B
 
 
+class TestDedupeMultiPositionPlayers:
+    """Tests for dedupe_multi_position_players function."""
+
+    def test_assigns_to_best_ranked_position(self):
+        """Player ranked #2 at SS and #4 at OF should be assigned to SS."""
+        # Create a multi-position player
+        player = _make_test_player("multi", "Multi Pos", ["SS", "OF"])
+
+        # Set up valuations with position_rank
+        player.computed.valuations_by_position["SS"] = PositionValuation(
+            position="SS",
+            normalized_z={},
+            dollar_values={},
+            total_z=1.5,
+            total_dollars=0.0,
+            tier="ROSTERED",
+            position_rank=2,  # Ranked #2 at SS
+        )
+        player.computed.valuations_by_position["OF"] = PositionValuation(
+            position="OF",
+            normalized_z={},
+            dollar_values={},
+            total_z=1.8,  # Higher Z but worse rank
+            total_dollars=0.0,
+            tier="ROSTERED",
+            position_rank=4,  # Ranked #4 at OF
+        )
+
+        # Create pools with the player in both
+        ss_pool = PositionPool(
+            position="SS",
+            role="HITTER",
+            roster_slots=5,
+            rostered_players=[player],
+        )
+        of_pool = PositionPool(
+            position="OF",
+            role="HITTER",
+            roster_slots=10,
+            rostered_players=[player],
+        )
+
+        pools = {"SS": ss_pool, "OF": of_pool}
+
+        result_pools, changes = dedupe_multi_position_players(pools)
+
+        # Should assign to SS (better rank) despite OF having higher Z
+        assert player.computed.primary_position == "SS"
+        assert changes == 1
+
+        # Player should only be in SS pool now
+        assert player in result_pools["SS"].rostered_players
+        assert player not in result_pools["OF"].rostered_players
+
+    def test_single_position_player_unchanged(self):
+        """Single-position player should be assigned to their only position."""
+        player = _make_test_player("single", "Single Pos", ["SS"])
+
+        player.computed.valuations_by_position["SS"] = PositionValuation(
+            position="SS",
+            normalized_z={},
+            dollar_values={},
+            total_z=1.0,
+            total_dollars=0.0,
+            tier="ROSTERED",
+            position_rank=3,
+        )
+
+        ss_pool = PositionPool(
+            position="SS",
+            role="HITTER",
+            roster_slots=5,
+            rostered_players=[player],
+        )
+
+        pools = {"SS": ss_pool}
+
+        result_pools, changes = dedupe_multi_position_players(pools)
+
+        assert player.computed.primary_position == "SS"
+        # First assignment counts as a change (from "" to "SS")
+        assert changes == 1
+        assert player in result_pools["SS"].rostered_players
+
+    def test_multiple_players_deduped(self):
+        """Multiple multi-position players should each be assigned correctly."""
+        # Player A: rank 1 at SS, rank 3 at 2B -> assign to SS
+        player_a = _make_test_player("a", "Player A", ["SS", "2B"])
+        player_a.computed.valuations_by_position["SS"] = PositionValuation(
+            position="SS",
+            normalized_z={},
+            dollar_values={},
+            total_z=2.0,
+            total_dollars=0.0,
+            tier="ROSTERED",
+            position_rank=1,
+        )
+        player_a.computed.valuations_by_position["2B"] = PositionValuation(
+            position="2B",
+            normalized_z={},
+            dollar_values={},
+            total_z=1.8,
+            total_dollars=0.0,
+            tier="ROSTERED",
+            position_rank=3,
+        )
+
+        # Player B: rank 2 at SS, rank 1 at 2B -> assign to 2B
+        player_b = _make_test_player("b", "Player B", ["SS", "2B"])
+        player_b.computed.valuations_by_position["SS"] = PositionValuation(
+            position="SS",
+            normalized_z={},
+            dollar_values={},
+            total_z=1.9,
+            total_dollars=0.0,
+            tier="ROSTERED",
+            position_rank=2,
+        )
+        player_b.computed.valuations_by_position["2B"] = PositionValuation(
+            position="2B",
+            normalized_z={},
+            dollar_values={},
+            total_z=2.1,
+            total_dollars=0.0,
+            tier="ROSTERED",
+            position_rank=1,
+        )
+
+        ss_pool = PositionPool(
+            position="SS",
+            role="HITTER",
+            roster_slots=5,
+            rostered_players=[player_a, player_b],
+        )
+        second_pool = PositionPool(
+            position="2B",
+            role="HITTER",
+            roster_slots=5,
+            rostered_players=[player_a, player_b],
+        )
+
+        pools = {"SS": ss_pool, "2B": second_pool}
+
+        result_pools, changes = dedupe_multi_position_players(pools)
+
+        assert player_a.computed.primary_position == "SS"
+        assert player_b.computed.primary_position == "2B"
+        assert changes == 2
+
+        # Each player in their assigned pool only
+        assert player_a in result_pools["SS"].rostered_players
+        assert player_a not in result_pools["2B"].rostered_players
+        assert player_b in result_pools["2B"].rostered_players
+        assert player_b not in result_pools["SS"].rostered_players
+
+
 class TestRebuildReplacementTier:
     """Tests for rebuild_replacement_tier function."""
-
-    def _make_player(self, id: str, total_z: float) -> Player:
-        """Create a minimal player with total_z set."""
-        player = Player(
-            id=id,
-            name=f"Player {id}",
-            team="TST",
-            positions=["SS"],
-            role="HITTER",
-            stats=HitterStats(
-                pa=600, ab=550, r=80, hr=20, rbi=70, sbn=10, obp=0.340, slg=0.460
-            ),
-        )
-        player.computed.total_z = total_z
-        return player
 
     def test_threshold_filtering(self):
         """Players within threshold % of last rostered qualify."""
         # Setup: last rostered has total_z=10.0, threshold at 3% = 9.7
-        p1 = self._make_player("p1", 12.0)  # rostered
-        p2 = self._make_player("p2", 10.0)  # rostered (last)
-        p3 = self._make_player("p3", 9.8)  # >= 9.7, qualifies
-        p4 = self._make_player("p4", 9.7)  # == 9.7, qualifies
-        p5 = self._make_player("p5", 9.6)  # < 9.7, does NOT qualify
-        p6 = self._make_player("p6", 5.0)  # far below
+        p1 = _make_test_player("p1", total_z=12.0)  # rostered
+        p2 = _make_test_player("p2", total_z=10.0)  # rostered (last)
+        p3 = _make_test_player("p3", total_z=9.8)  # >= 9.7, qualifies
+        p4 = _make_test_player("p4", total_z=9.7)  # == 9.7, qualifies
+        p5 = _make_test_player("p5", total_z=9.6)  # < 9.7, does NOT qualify
+        p6 = _make_test_player("p6", total_z=5.0)  # far below
 
         pool = PositionPool(
             position="SS",
@@ -356,11 +721,11 @@ class TestRebuildReplacementTier:
 
     def test_minimum_tier_size_enforced(self):
         """When fewer players qualify by threshold, enforce minimum size."""
-        p1 = self._make_player("p1", 10.0)  # rostered
-        p2 = self._make_player("p2", 8.0)  # rostered (last)
-        p3 = self._make_player("p3", 5.0)  # below threshold (7.76)
-        p4 = self._make_player("p4", 4.0)  # below threshold
-        p5 = self._make_player("p5", 3.0)  # below threshold
+        p1 = _make_test_player("p1", total_z=10.0)  # rostered
+        p2 = _make_test_player("p2", total_z=8.0)  # rostered (last)
+        p3 = _make_test_player("p3", total_z=5.0)  # below threshold (7.76)
+        p4 = _make_test_player("p4", total_z=4.0)  # below threshold
+        p5 = _make_test_player("p5", total_z=3.0)  # below threshold
 
         pool = PositionPool(
             position="SS",
@@ -395,9 +760,9 @@ class TestRebuildReplacementTier:
 
     def test_use_per_pool_z_flag(self):
         """When use_per_pool_z=True, reads from valuations_by_position."""
-        p1 = self._make_player("p1", 0.0)  # global total_z ignored
-        p2 = self._make_player("p2", 0.0)
-        p3 = self._make_player("p3", 0.0)
+        p1 = _make_test_player("p1", total_z=0.0)  # global total_z ignored
+        p2 = _make_test_player("p2", total_z=0.0)
+        p3 = _make_test_player("p3", total_z=0.0)
 
         # Set per-pool Z values
         p1.computed.valuations_by_position["SS"] = PositionValuation(
@@ -407,6 +772,7 @@ class TestRebuildReplacementTier:
             total_z=10.0,
             total_dollars=0.0,
             tier="ROSTERED",
+            position_rank=0,
         )
         p2.computed.valuations_by_position["SS"] = PositionValuation(
             position="SS",
@@ -415,6 +781,7 @@ class TestRebuildReplacementTier:
             total_z=8.0,
             total_dollars=0.0,
             tier="ROSTERED",
+            position_rank=1,
         )
         p3.computed.valuations_by_position["SS"] = PositionValuation(
             position="SS",
@@ -423,6 +790,7 @@ class TestRebuildReplacementTier:
             total_z=7.8,
             total_dollars=0.0,
             tier="REPLACEMENT",
+            position_rank=2,
         )
 
         pool = PositionPool(

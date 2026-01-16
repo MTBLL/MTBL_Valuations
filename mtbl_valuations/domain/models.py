@@ -54,6 +54,7 @@ class PositionValuation(MTBLBaseModel):
     total_z: float
     total_dollars: float
     tier: Tier
+    position_rank: int
 
 
 class ComputedValues(MTBLBaseModel):
@@ -65,7 +66,7 @@ class ComputedValues(MTBLBaseModel):
     dollar_values: dict[str, float] = Field(default_factory=dict)
     total_dollars: float = 0.0
     tier: Tier = "REPLACEMENT"
-    valuations_by_position: dict[str, "PositionValuation"] = Field(default_factory=dict)
+    valuations_by_position: dict[str, PositionValuation] = Field(default_factory=dict)
 
 
 class Player(MTBLBaseModel):

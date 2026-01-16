@@ -96,6 +96,11 @@ def iterate_to_convergence(
 
             all_pool_players = sorted(all_pool_players, key=_get_total_z, reverse=True)
 
+            # Store position rank for each player
+            if track_z_per_pool:
+                for rank, player in enumerate(all_pool_players):
+                    player.computed.valuations_by_position[pos].position_rank = rank
+
             # Step 6: Reassign tiers based on new ranking
             new_rostered_tier = all_pool_players[: pool.roster_slots]
 
@@ -147,6 +152,7 @@ def _ensure_position_valuation(player: Player, position: str) -> None:
             total_z=0.0,
             total_dollars=0.0,
             tier="BELOW_REPLACEMENT",
+            position_rank=100,
         )
 
 

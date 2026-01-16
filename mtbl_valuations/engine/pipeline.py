@@ -20,6 +20,7 @@ from mtbl_valuations.engine.pools import (
     build_pitcher_pool,
     build_position_pools,
     build_util_pool,
+    dedupe_multi_position_players,
 )
 from mtbl_valuations.engine.valuation import calc_player_dollars
 from mtbl_valuations.io.exports import export_detailed_position_csvs
@@ -113,6 +114,21 @@ def run_trp_valuation(
         league_settings,
         track_z_per_pool=True,  # Store Z-scores per position
     )
+
+    # Dedupe: assign multi-position players to their best-ranked position
+    print("  Deduplicating multi-position players...")
+    hitter_pools, dedupe_changes = dedupe_multi_position_players(hitter_pools)
+    print(f"    Reassigned {dedupe_changes} players to primary positions")
+
+    # Re-iterate after dedupe since pool composition changed
+    if dedupe_changes > 0:
+        print("  Re-iterating after dedupe...")
+        hitter_pools = iterate_to_convergence(
+            hitter_pools,
+            budget_config,
+            league_settings,
+            track_z_per_pool=False,  # Now single-position mode
+        )
 
     # ========================================================================
     # Phase 4: Build UTIL pool from stabilized replacement tiers + pure DHs

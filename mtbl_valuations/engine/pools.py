@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import BuiltinMethodType
 from typing import Any
 
 from ..domain.models import Player, PositionPool, Role
@@ -121,7 +120,9 @@ def build_pitcher_pool(
     )
 
     # Sort by composite metric
-    sorted_players: list[Player] = sorted(players, key=get_composite_metric, reverse=True)
+    sorted_players: list[Player] = sorted(
+        players, key=get_composite_metric, reverse=True
+    )
 
     # Initial tier assignment
     pool.rostered_players = sorted_players[: pool.roster_slots]
@@ -150,31 +151,39 @@ def build_util_pool(
         roster_slots=roster_slots.get("UTIL", 0) * num_teams,
     )
 
-    # Collect all replacement-tier and below-replacement players
-    util_candidates: set[Player] = set()
+    # Collect all replacement-tier and below-replacement players (dedupe by ID)
+    util_candidates: dict[str, Player] = {}
 
     for position_pool in hitter_pools.values():
         for player in (
             position_pool.replacement_players + position_pool.below_replacement
-        )
+        ):
+            util_candidates[player.id] = player
 
     # Add pure DH players
     for player in pure_dh_players:
-        util_candidates.add(player)
+        util_candidates[player.id] = player
 
     # Sort by composite metric
-    util_candidates_sorted: list[Player] = sorted(util_candidates, key=get_composite_metric, reverse=True)
+    util_candidates_sorted: list[Player] = sorted(
+        util_candidates.values(), key=get_composite_metric, reverse=True
+    )
 
     # Initial tier assignment
     util_pool.rostered_players = util_candidates_sorted[: util_pool.roster_slots]
 
     # Replacement tier
     if util_pool.rostered_players:
-        util_pool = _build_replacement_tier(util_pool, util_candidates_sorted, budget_config)
+        util_pool = _build_replacement_tier(
+            util_pool, util_candidates_sorted, budget_config
+        )
 
     return util_pool
 
-def _build_replacement_tier(pool: PositionPool, position_players: list[Player], budget_config: dict[str, Any]) -> PositionPool:
+
+def _build_replacement_tier(
+    pool: PositionPool, position_players: list[Player], budget_config: dict[str, Any]
+) -> PositionPool:
     pool = pool
     last_rostered_metric = get_composite_metric(pool.rostered_players[-1])
     threshold = _calc_replacement_threshold(
@@ -200,6 +209,7 @@ def _build_replacement_tier(pool: PositionPool, position_players: list[Player], 
     ]
 
     return pool
+
 
 def rebuild_replacement_tier_on_z(
     all_pool_players: list[Player],
@@ -331,3 +341,54 @@ def rebuild_pools_after_assignment(
         ]
 
     return pools
+
+
+def dedupe_multi_position_players(
+    pools: dict[str, PositionPool],
+) -> tuple[dict[str, PositionPool], int]:
+    """
+    Assign multi-position players to their highest-ranked position and remove from others.
+
+    A player ranked #4 at SS and #5 at OF should be assigned to SS (better rank).
+    Uses position_rank from valuations_by_position (set during iterate_to_convergence).
+
+    Args:
+        pools: Dictionary of position pools with multi-eligible players.
+
+    Returns:
+        Tuple of (cleaned pools, number of players reassigned).
+    """
+    # Collect all unique players across pools
+    seen_players: dict[str, Player] = {}
+    for pool in pools.values():
+        for player in pool.rostered_players:
+            seen_players[player.id] = player
+
+    # Assign each player to their best-ranked position
+    changes = 0
+    for player in seen_players.values():
+        valuations = player.computed.valuations_by_position
+        if not valuations:
+            continue
+
+        # Find position with best (lowest) rank among ROSTERED positions
+        best_pos = None
+        best_rank = float("inf")
+
+        for pos, val in valuations.items():
+            if val.tier == "ROSTERED" and val.position_rank < best_rank:
+                best_rank = val.position_rank
+                best_pos = pos
+
+        # Fall back to any position if none are rostered
+        if best_pos is None:
+            best_pos = min(valuations, key=lambda p: valuations[p].position_rank)
+
+        if player.computed.primary_position != best_pos:
+            changes += 1
+            player.computed.primary_position = best_pos
+
+    # Now remove players from pools where they're not assigned
+    pools = rebuild_pools_after_assignment(pools)
+
+    return pools, changes
