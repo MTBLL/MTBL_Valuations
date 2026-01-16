@@ -10,12 +10,7 @@ def validate_budget_balance(
 ) -> None:
     """Validate that total allocated dollars match league budget."""
     total_allocated = sum(
-        sum(
-            player.computed.valuations_by_position.get(
-                pool.position, player.computed
-            ).total_dollars
-            for player in pool.rostered_players
-        )
+        sum(player.valuation.total_dollars for player in pool.rostered_players)
         for _, pool in all_pools.items()
     )
 
@@ -59,7 +54,7 @@ def validate_rlp_z_scores(all_pools: dict[str, PositionPool]) -> None:
 
     for pos, pool in all_pools.items():
         if pool.replacement_players:
-            avg_z = sum(p.computed.total_z for p in pool.replacement_players) / len(
+            avg_z = sum(p.valuation.total_z for p in pool.replacement_players) / len(
                 pool.replacement_players
             )
             print(f"{pos}: RLP avg total Z = {avg_z:.3f}")

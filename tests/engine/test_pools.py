@@ -53,7 +53,7 @@ def _make_test_player(
         ),
     )
     if total_z is not None:
-        player.computed.total_z = total_z
+        player.valuation.total_z = total_z
     return player
 
 
@@ -154,7 +154,7 @@ class TestBuildPositionPools:
                 pa=600, ab=550, r=80, hr=20, rbi=70, sbn=15, obp=0.340, slg=0.460
             ),
         )
-        ss_player.computed.primary_position = "SS"
+        ss_player.valuation.primary_position = "SS"
 
         second_player = Player(
             id="2b1",
@@ -166,7 +166,7 @@ class TestBuildPositionPools:
                 pa=600, ab=550, r=75, hr=18, rbi=65, sbn=12, obp=0.330, slg=0.440
             ),
         )
-        second_player.computed.primary_position = "2B"
+        second_player.valuation.primary_position = "2B"
 
         players = [ss_player, second_player]
         roster_slots = {"SS": 1, "2B": 1}
@@ -408,23 +408,19 @@ class TestAssignFinalPositions:
         )
 
         # SS: Rostered but lower total_z
-        player.computed.valuations_by_position["SS"] = PositionValuation(
+        player.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={"R": 0.5},
-            dollar_values={"R": 5.0},
             total_z=0.5,  # Lower Z
-            total_dollars=15.0,
             tier="ROSTERED",  # Rostered
             position_rank=5,
         )
 
         # 2B: Replacement but higher total_z
-        player.computed.valuations_by_position["2B"] = PositionValuation(
+        player.valuation.valuations_by_position["2B"] = PositionValuation(
             position="2B",
             normalized_z={"R": 1.0},
-            dollar_values={"R": 10.0},
             total_z=1.0,  # Higher Z
-            total_dollars=30.0,
             tier="REPLACEMENT",  # But only replacement level
             position_rank=15,
         )
@@ -433,7 +429,7 @@ class TestAssignFinalPositions:
         assign_final_positions(pools, [player])
 
         # Should choose SS because player is ROSTERED there (tier takes priority over Z)
-        assert player.computed.primary_position == "SS"
+        assert player.valuation.primary_position == "SS"
 
     def test_assign_final_positions_chooses_highest_z(self):
         """Test that players are assigned to the position with highest total_z.
@@ -453,22 +449,18 @@ class TestAssignFinalPositions:
         )
 
         # Set up valuations where 2B has higher total_z than SS
-        player.computed.valuations_by_position["SS"] = PositionValuation(
+        player.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={"R": 0.5},
-            dollar_values={"R": 5.0},
             total_z=0.5,  # Lower Z
-            total_dollars=15.0,
             tier="ROSTERED",
             position_rank=3,
         )
 
-        player.computed.valuations_by_position["2B"] = PositionValuation(
+        player.valuation.valuations_by_position["2B"] = PositionValuation(
             position="2B",
             normalized_z={"R": 0.7},
-            dollar_values={"R": 7.0},
             total_z=0.7,  # Higher Z
-            total_dollars=25.0,
             tier="ROSTERED",
             position_rank=2,
         )
@@ -479,7 +471,7 @@ class TestAssignFinalPositions:
         _, changes = assign_final_positions(pools, [player])
 
         assert changes == 1  # Position changed from "" to "2B"
-        assert player.computed.primary_position == "2B"
+        assert player.valuation.primary_position == "2B"
 
 
 class TestRebuildPools:
@@ -493,7 +485,7 @@ class TestRebuildPools:
             positions=["SS"],
             role="HITTER",
         )
-        player1.computed.primary_position = "SS"
+        player1.valuation.primary_position = "SS"
 
         player2 = Player(
             id="p2",
@@ -502,7 +494,7 @@ class TestRebuildPools:
             positions=["SS", "2B"],
             role="HITTER",
         )
-        player2.computed.primary_position = "2B"  # Assigned to 2B, not SS
+        player2.valuation.primary_position = "2B"  # Assigned to 2B, not SS
 
         # Create pools where player2 appears in both (pre-cleanup state)
         ss_pool = {
@@ -543,21 +535,17 @@ class TestDedupeMultiPositionPlayers:
         player = _make_test_player("multi", "Multi Pos", ["SS", "OF"])
 
         # Set up valuations with position_rank
-        player.computed.valuations_by_position["SS"] = PositionValuation(
+        player.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={},
-            dollar_values={},
             total_z=1.5,
-            total_dollars=0.0,
             tier="ROSTERED",
             position_rank=2,  # Ranked #2 at SS
         )
-        player.computed.valuations_by_position["OF"] = PositionValuation(
+        player.valuation.valuations_by_position["OF"] = PositionValuation(
             position="OF",
             normalized_z={},
-            dollar_values={},
             total_z=1.8,  # Higher Z but worse rank
-            total_dollars=0.0,
             tier="ROSTERED",
             position_rank=4,  # Ranked #4 at OF
         )
@@ -581,7 +569,7 @@ class TestDedupeMultiPositionPlayers:
         result_pools, changes = dedupe_multi_position_players(pools)
 
         # Should assign to SS (better rank) despite OF having higher Z
-        assert player.computed.primary_position == "SS"
+        assert player.valuation.primary_position == "SS"
         assert changes == 1
 
         # Player should only be in SS pool now
@@ -592,12 +580,10 @@ class TestDedupeMultiPositionPlayers:
         """Single-position player should be assigned to their only position."""
         player = _make_test_player("single", "Single Pos", ["SS"])
 
-        player.computed.valuations_by_position["SS"] = PositionValuation(
+        player.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={},
-            dollar_values={},
             total_z=1.0,
-            total_dollars=0.0,
             tier="ROSTERED",
             position_rank=3,
         )
@@ -613,7 +599,7 @@ class TestDedupeMultiPositionPlayers:
 
         result_pools, changes = dedupe_multi_position_players(pools)
 
-        assert player.computed.primary_position == "SS"
+        assert player.valuation.primary_position == "SS"
         # First assignment counts as a change (from "" to "SS")
         assert changes == 1
         assert player in result_pools["SS"].rostered_players
@@ -622,42 +608,34 @@ class TestDedupeMultiPositionPlayers:
         """Multiple multi-position players should each be assigned correctly."""
         # Player A: rank 1 at SS, rank 3 at 2B -> assign to SS
         player_a = _make_test_player("a", "Player A", ["SS", "2B"])
-        player_a.computed.valuations_by_position["SS"] = PositionValuation(
+        player_a.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={},
-            dollar_values={},
             total_z=2.0,
-            total_dollars=0.0,
             tier="ROSTERED",
             position_rank=1,
         )
-        player_a.computed.valuations_by_position["2B"] = PositionValuation(
+        player_a.valuation.valuations_by_position["2B"] = PositionValuation(
             position="2B",
             normalized_z={},
-            dollar_values={},
             total_z=1.8,
-            total_dollars=0.0,
             tier="ROSTERED",
             position_rank=3,
         )
 
         # Player B: rank 2 at SS, rank 1 at 2B -> assign to 2B
         player_b = _make_test_player("b", "Player B", ["SS", "2B"])
-        player_b.computed.valuations_by_position["SS"] = PositionValuation(
+        player_b.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={},
-            dollar_values={},
             total_z=1.9,
-            total_dollars=0.0,
             tier="ROSTERED",
             position_rank=2,
         )
-        player_b.computed.valuations_by_position["2B"] = PositionValuation(
+        player_b.valuation.valuations_by_position["2B"] = PositionValuation(
             position="2B",
             normalized_z={},
-            dollar_values={},
             total_z=2.1,
-            total_dollars=0.0,
             tier="ROSTERED",
             position_rank=1,
         )
@@ -679,8 +657,8 @@ class TestDedupeMultiPositionPlayers:
 
         result_pools, changes = dedupe_multi_position_players(pools)
 
-        assert player_a.computed.primary_position == "SS"
-        assert player_b.computed.primary_position == "2B"
+        assert player_a.valuation.primary_position == "SS"
+        assert player_b.valuation.primary_position == "2B"
         assert changes == 2
 
         # Each player in their assigned pool only
@@ -765,30 +743,24 @@ class TestRebuildReplacementTier:
         p3 = _make_test_player("p3", total_z=0.0)
 
         # Set per-pool Z values
-        p1.computed.valuations_by_position["SS"] = PositionValuation(
+        p1.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={},
-            dollar_values={},
             total_z=10.0,
-            total_dollars=0.0,
             tier="ROSTERED",
             position_rank=0,
         )
-        p2.computed.valuations_by_position["SS"] = PositionValuation(
+        p2.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={},
-            dollar_values={},
             total_z=8.0,
-            total_dollars=0.0,
             tier="ROSTERED",
             position_rank=1,
         )
-        p3.computed.valuations_by_position["SS"] = PositionValuation(
+        p3.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={},
-            dollar_values={},
             total_z=7.8,
-            total_dollars=0.0,
             tier="REPLACEMENT",
             position_rank=2,
         )

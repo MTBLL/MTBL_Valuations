@@ -9,7 +9,7 @@ from mtbl_valuations.domain.models import Player, PositionPool, PositionValuatio
 from mtbl_valuations.engine.valuation import get_player_stat
 
 if TYPE_CHECKING:
-    from mtbl_valuations.domain.models import LeagueBudget
+    pass
 from mtbl_valuations.engine.pools import rebuild_replacement_tier_on_z
 from mtbl_valuations.engine.valuation import (
     get_categories,
@@ -91,15 +91,15 @@ def iterate_to_convergence(
             # Step 5: Re-rank by total Z
             def _get_total_z(p: Player) -> float:
                 if track_z_per_pool:
-                    return p.computed.valuations_by_position[pos].total_z
-                return p.computed.total_z
+                    return p.valuation.valuations_by_position[pos].total_z
+                return p.valuation.total_z
 
             all_pool_players = sorted(all_pool_players, key=_get_total_z, reverse=True)
 
             # Store position rank for each player
             if track_z_per_pool:
                 for rank, player in enumerate(all_pool_players):
-                    player.computed.valuations_by_position[pos].position_rank = rank
+                    player.valuation.valuations_by_position[pos].position_rank = rank
 
             # Step 6: Reassign tiers based on new ranking
             new_rostered_tier = all_pool_players[: pool.roster_slots]
@@ -144,13 +144,11 @@ def iterate_to_convergence(
 
 def _ensure_position_valuation(player: Player, position: str) -> None:
     """Ensure a PositionValuation exists for this position."""
-    if position not in player.computed.valuations_by_position:
-        player.computed.valuations_by_position[position] = PositionValuation(
+    if position not in player.valuation.valuations_by_position:
+        player.valuation.valuations_by_position[position] = PositionValuation(
             position=position,
             normalized_z={},
-            dollar_values={},
             total_z=0.0,
-            total_dollars=0.0,
             tier="BELOW_REPLACEMENT",
             position_rank=100,
         )
@@ -160,103 +158,21 @@ def _assign_player_tiers(pool: PositionPool, track_z_per_pool: bool) -> None:
     # Mark player tiers
     for player in pool.rostered_players:
         if track_z_per_pool:
-            player.computed.valuations_by_position[pool.position].tier = "ROSTERED"
+            player.valuation.valuations_by_position[pool.position].tier = "ROSTERED"
         else:
-            player.computed.tier = "ROSTERED"
+            player.valuation.tier = "ROSTERED"
     for player in pool.replacement_players:
         if track_z_per_pool:
-            player.computed.valuations_by_position[pool.position].tier = "REPLACEMENT"
+            player.valuation.valuations_by_position[pool.position].tier = "REPLACEMENT"
         else:
-            player.computed.tier = "REPLACEMENT"
+            player.valuation.tier = "REPLACEMENT"
     for player in pool.below_replacement:
         if track_z_per_pool:
-            player.computed.valuations_by_position[
+            player.valuation.valuations_by_position[
                 pool.position
             ].tier = "BELOW_REPLACEMENT"
         else:
-            player.computed.tier = "BELOW_REPLACEMENT"
-
-
-def stabilize_position_assignments(
-    pools: dict[str, PositionPool],
-    all_players: list[Player],
-    budget_config: dict[str, Any],
-    league_settings: dict[str, Any],
-    league_budget: LeagueBudget,
-    max_stability_iterations: int = 10,
-) -> dict[str, PositionPool]:
-    """
-    Iterate position assignments until no player would benefit from changing.
-
-    This function implements the stability loop:
-    1. Calculate dollar values at each position
-    2. Assign each player to highest-value position
-    3. Rebuild pools (remove from non-primary pools)
-    4. Re-converge pools
-    5. Re-calculate dollar values
-    6. Check if any player would change - if yes, goto step 2
-
-    Args:
-        pools: Position pools that have already converged once with multi-eligibility.
-        all_players: All players across all pools.
-        budget_config: Configuration for convergence and budget allocation.
-        league_settings: League configuration including scoring categories.
-        league_budget: League-wide budget structure for dollar allocation.
-        max_stability_iterations: Maximum iterations before giving up.
-
-    Returns:
-        Stabilized position pools with each player in exactly one pool.
-    """
-    from .budget import allocate_position_budgets, calc_dollars_per_z
-    from .pools import (
-        assign_final_positions,
-        rebuild_pools_after_assignment,
-    )
-    from .valuation import calc_player_dollars
-
-    for stability_iter in range(1, max_stability_iterations + 1):
-        print(f"\n  Stability iteration {stability_iter}...")
-
-        # Step 1: Calculate dollar values for each position
-        pools = allocate_position_budgets(pools, league_budget, budget_config)
-        pools = calc_dollars_per_z(pools)
-
-        for pos, pool in pools.items():
-            for player in pool.rostered_players + pool.replacement_players:
-                dollar_values = calc_player_dollars(player, pool)
-                total_dollars = sum(dollar_values.values())
-
-                # Store in per-position valuation
-                if pos in player.computed.valuations_by_position:
-                    player.computed.valuations_by_position[
-                        pos
-                    ].dollar_values = dollar_values
-                    player.computed.valuations_by_position[
-                        pos
-                    ].total_dollars = total_dollars
-
-        # Step 2: Assign to best position
-        all_players, changes = assign_final_positions(pools, all_players)
-        print(f"    Position changes: {changes}")
-
-        if changes == 0:
-            print(f"  Stability achieved after {stability_iter} iterations")
-            break
-
-        # Step 3: Rebuild pools (remove players from non-primary positions)
-        pools = rebuild_pools_after_assignment(pools)
-
-        # Step 4: Re-converge with single-position mode
-        pools = iterate_to_convergence(
-            pools,
-            budget_config,
-            league_settings,
-            track_z_per_pool=False,  # Now single-position
-        )
-    else:
-        print(f"  Max stability iterations ({max_stability_iterations}) reached")
-
-    return pools
+            player.valuation.tier = "BELOW_REPLACEMENT"
 
 
 def _store_z_scores(
@@ -265,18 +181,18 @@ def _store_z_scores(
     total_z = sum(normalized_z.values())
     if track_per_pool:
         _ensure_position_valuation(player, pos)
-        player.computed.valuations_by_position[pos].normalized_z = normalized_z
-        player.computed.valuations_by_position[pos].total_z = total_z
+        player.valuation.valuations_by_position[pos].normalized_z = normalized_z
+        player.valuation.valuations_by_position[pos].total_z = total_z
     else:
-        player.computed.normalized_z = normalized_z
-        player.computed.total_z = total_z
+        player.valuation.normalized_z = normalized_z
+        player.valuation.total_z = total_z
 
 
 def _get_bucket(player: Player, pos: str, track_per_pool: bool):
     if track_per_pool:
         _ensure_position_valuation(player, pos)
-        return player.computed.valuations_by_position[pos]
-    return player.computed
+        return player.valuation.valuations_by_position[pos]
+    return player.valuation
 
 
 def _safe_mean(nums: Iterable[float]) -> float:

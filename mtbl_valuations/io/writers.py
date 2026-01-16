@@ -30,18 +30,18 @@ def write_valuations_csv(
                 "name": player.name,
                 "position": pos,
                 "role": pool.role,
-                "total_z": round(player.computed.total_z, 3),
-                "dollar_value": round(player.computed.total_dollars, 2),
-                "tier": player.computed.tier,
+                "total_z": round(player.valuation.total_z, 3),
+                "dollar_value": round(player.valuation.total_dollars, 2),
+                "tier": player.valuation.tier,
             }
 
             # Add Z-scores per category
-            for cat in player.computed.normalized_z.keys():
-                row[f"z_{cat}"] = round(player.computed.normalized_z[cat], 3)
+            for cat in player.valuation.normalized_z.keys():
+                row[f"z_{cat}"] = round(player.valuation.normalized_z[cat], 3)
 
             # Add dollar values per category
-            for cat in player.computed.dollar_values.keys():
-                row[f"dollar_{cat}"] = round(player.computed.dollar_values[cat], 2)
+            for cat in player.valuation.dollar_values.keys():
+                row[f"dollar_{cat}"] = round(player.valuation.dollar_values[cat], 2)
 
             rows.append(row)
 
@@ -74,7 +74,7 @@ def write_position_summary_csv(
             row[f"dollars_per_z_{cat}"] = round(rate, 3)
 
         # Add replacement baseline stats
-        for cat, value in pool.rlp_raw_z_avg.items():
+        for cat, value in pool.rlp_raw_avg.items():
             row[f"replacement_baseline_{cat}"] = round(value, 3)
 
         rows.append(row)
@@ -103,17 +103,17 @@ def write_player_json(
 
         for player in all_players:
             player_valuations[player.id] = {
-                "primary_position": player.computed.primary_position,
-                "tier": player.computed.tier,
-                "total_z": round(player.computed.total_z, 3),
-                "total_dollars": round(player.computed.total_dollars, 2),
+                "primary_position": player.valuation.primary_position,
+                "tier": player.valuation.tier,
+                "total_z": round(player.valuation.total_z, 3),
+                "total_dollars": round(player.valuation.total_dollars, 2),
                 "z_scores": {
                     cat: round(val, 3)
-                    for cat, val in player.computed.normalized_z.items()
+                    for cat, val in player.valuation.normalized_z.items()
                 },
                 "dollar_values": {
                     cat: round(val, 2)
-                    for cat, val in player.computed.dollar_values.items()
+                    for cat, val in player.valuation.dollar_values.items()
                 },
             }
 

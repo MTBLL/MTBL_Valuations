@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from ..domain.models import (
-    ComputedValues,
     HitterPlayer,
     HitterStats,
     PitcherPlayer,
     PitcherStats,
     Player,
+    Valuation,
 )
 
 
@@ -70,7 +70,7 @@ def load_batters(file_path: Path) -> list[HitterPlayer]:
             primary_position=record.get("primary_position", ""),
             role="HITTER",
             stats=stats,
-            computed=ComputedValues(),
+            valuation=Valuation(),
         )
 
         hitter_players.append(HitterPlayer(player=player, stats=stats))
@@ -127,7 +127,7 @@ def load_pitchers(file_path: Path) -> list[PitcherPlayer]:
             primary_position=record.get("primary_position", ""),
             role=role,
             stats=stats,
-            computed=ComputedValues(),
+            valuation=Valuation(),
         )
 
         pitcher_players.append(PitcherPlayer(player=player, stats=stats))

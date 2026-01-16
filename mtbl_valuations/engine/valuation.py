@@ -42,7 +42,7 @@ def calc_means(
     ):
         return {}
 
-    sample_obj = players[0].stats if is_stat else players[0].computed  # type: ignore
+    sample_obj = players[0].stats if is_stat else players[0].valuation  # type: ignore
 
     # Handle dict-type fields (like raw_z, normalized_z)
     if isinstance(sample_obj, dict):
@@ -62,7 +62,7 @@ def calc_means(
     for cat in categories:
         values = []
         for player in players:
-            obj = player.stats if is_stat else player.computed  # type: ignore
+            obj = player.stats if is_stat else player.valuation  # type: ignore
             if isinstance(obj, dict):
                 val = obj.get(cat, 0.0)
             elif hasattr(obj, field):
@@ -97,7 +97,7 @@ def calc_stdevs(
     for cat in means.keys():
         values = []
         for player in players:
-            obj = player.stats if is_stat else player.computed  # type: ignore
+            obj = player.stats if is_stat else player.valuation  # type: ignore
             if isinstance(obj, dict):
                 val = obj.get(cat, 0.0)
             elif hasattr(obj, field):
@@ -175,11 +175,11 @@ def calc_raw_z(
     return raw_z
 
 
-def calc_player_dollars(player: Player, pool: PositionPool) -> dict[str, float]:
+def distribute_player_dollars(player: Player, pool: PositionPool) -> dict[str, float]:
     """Calculate dollar values per category for a player."""
     dollar_values = {}
 
-    for category, z_value in player.computed.normalized_z.items():
+    for category, z_value in player.valuation.normalized_z.items():
         rate = pool.dollars_per_z.get(category, 0.0)
         dollar_values[category] = z_value * rate
 

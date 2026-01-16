@@ -1,5 +1,4 @@
 from .models import (
-    ComputedValues,
     HitterPlayer,
     HitterStats,
     LeagueBudget,
@@ -10,10 +9,11 @@ from .models import (
     PositionValuation,
     Role,
     Tier,
+    Valuation,
 )
 
 __all__ = [
-    "ComputedValues",
+    "Valuation",
     "HitterPlayer",
     "HitterStats",
     "LeagueBudget",

@@ -34,6 +34,6 @@ class TestIteration:
         assert len(results["SS"].rostered_players) == 11
         assert len(results["OF"].rostered_players) == 33
         assert (
-            last_rostered_ss.computed.valuations_by_position["SS"].total_z
-            > first_rlp_ss.computed.valuations_by_position["SS"].total_z
+            last_rostered_ss.valuation.valuations_by_position["SS"].total_z
+            > first_rlp_ss.valuation.valuations_by_position["SS"].total_z
         )

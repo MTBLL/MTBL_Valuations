@@ -83,7 +83,7 @@ def build_position_pools(
         else:
             # Only include players assigned to this position
             position_players = [
-                p for p in players if p.computed.primary_position == position
+                p for p in players if p.valuation.primary_position == position
             ]
 
         # Sort by composite metric
@@ -234,8 +234,8 @@ def rebuild_replacement_tier_on_z(
 
     def _get_total_z_for_player(p: Player) -> float:
         if use_per_pool_z:
-            return p.computed.valuations_by_position[pool.position].total_z
-        return p.computed.total_z
+            return p.valuation.valuations_by_position[pool.position].total_z
+        return p.valuation.total_z
 
     # Use total_z instead of composite metric for threshold
     if pool.rostered_players:
@@ -279,7 +279,7 @@ def assign_final_positions(
     changes = 0
 
     for player in players:
-        if not player.computed.valuations_by_position:
+        if not player.valuation.valuations_by_position:
             continue
 
         # Find position with highest total_z where player is ROSTERED
@@ -288,7 +288,7 @@ def assign_final_positions(
         best_position = None
         best_z = float("-inf")
 
-        for position, valuation in player.computed.valuations_by_position.items():
+        for position, valuation in player.valuation.valuations_by_position.items():
             # Prefer positions where player is rostered
             if valuation.tier == "ROSTERED" and valuation.total_z > best_z:
                 best_z = valuation.total_z
@@ -296,19 +296,19 @@ def assign_final_positions(
 
         # If not rostered anywhere, fall back to highest total_z regardless of tier
         if best_position is None:
-            for position, valuation in player.computed.valuations_by_position.items():
+            for position, valuation in player.valuation.valuations_by_position.items():
                 if valuation.total_z > best_z:
                     best_z = valuation.total_z
                     best_position = position
 
         # If still no position (edge case), use first available
-        if best_position is None and player.computed.valuations_by_position:
-            best_position = next(iter(player.computed.valuations_by_position.keys()))
+        if best_position is None and player.valuation.valuations_by_position:
+            best_position = next(iter(player.valuation.valuations_by_position.keys()))
 
         # Check if position changed
-        if best_position and player.computed.primary_position != best_position:
+        if best_position and player.valuation.primary_position != best_position:
             changes += 1
-            player.computed.primary_position = best_position
+            player.valuation.primary_position = best_position
 
     return players, changes
 
@@ -331,13 +331,13 @@ def rebuild_pools_after_assignment(
     for pos, pool in pools.items():
         # Filter to only players assigned to this position
         pool.rostered_players = [
-            p for p in pool.rostered_players if p.computed.primary_position == pos
+            p for p in pool.rostered_players if p.valuation.primary_position == pos
         ]
         pool.replacement_players = [
-            p for p in pool.replacement_players if p.computed.primary_position == pos
+            p for p in pool.replacement_players if p.valuation.primary_position == pos
         ]
         pool.below_replacement = [
-            p for p in pool.below_replacement if p.computed.primary_position == pos
+            p for p in pool.below_replacement if p.valuation.primary_position == pos
         ]
 
     return pools
@@ -367,7 +367,7 @@ def dedupe_multi_position_players(
     # Assign each player to their best-ranked position
     changes = 0
     for player in seen_players.values():
-        valuations = player.computed.valuations_by_position
+        valuations = player.valuation.valuations_by_position
         if not valuations:
             continue
 
@@ -384,9 +384,9 @@ def dedupe_multi_position_players(
         if best_pos is None:
             best_pos = min(valuations, key=lambda p: valuations[p].position_rank)
 
-        if player.computed.primary_position != best_pos:
+        if player.valuation.primary_position != best_pos:
             changes += 1
-            player.computed.primary_position = best_pos
+            player.valuation.primary_position = best_pos
 
     # Now remove players from pools where they're not assigned
     pools = rebuild_pools_after_assignment(pools)

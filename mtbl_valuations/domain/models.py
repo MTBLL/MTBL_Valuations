@@ -46,18 +46,19 @@ class PitcherStats(MTBLBaseModel):
 
 
 class PositionValuation(MTBLBaseModel):
-    """Valuation for a specific position context."""
+    """
+    Valuation for a specific position context.
+    Position Valuation does not have applied dollars since the player will have a single position by the time valuation is computed.
+    """
 
     position: str
     normalized_z: dict[str, float]
-    dollar_values: dict[str, float]
     total_z: float
-    total_dollars: float
     tier: Tier
     position_rank: int
 
 
-class ComputedValues(MTBLBaseModel):
+class Valuation(MTBLBaseModel):
     """Computed valuation fields."""
 
     primary_position: str = ""
@@ -79,7 +80,7 @@ class Player(MTBLBaseModel):
     primary_position: str = ""  # Set during position assignment, defaults to empty
     role: Role
     stats: Union[HitterStats, PitcherStats, None] = None
-    computed: ComputedValues = Field(default_factory=ComputedValues)
+    valuation: Valuation = Field(default_factory=Valuation)
 
 
 class HitterPlayer(MTBLBaseModel):
@@ -114,7 +115,6 @@ class PositionPool(MTBLBaseModel):
     dollars_per_z: dict[str, float] = Field(default_factory=dict)
     total_pool_z: dict[str, float] = Field(default_factory=dict)
     production_share: dict[str, float] = Field(default_factory=dict)
-    weighted_pa: float = 0.0
 
 
 class LeagueBudget(MTBLBaseModel):

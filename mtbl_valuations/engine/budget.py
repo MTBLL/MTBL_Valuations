@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import statistics
 from typing import Any
 
 from ..domain.models import LeagueBudget, PositionPool
@@ -66,7 +67,6 @@ def allocate_position_budgets(
     """
     # Separate counting and rate stats
     counting_stats = ["R", "HR", "RBI", "SBN"]
-    rate_stats = ["OBP", "SLG"]
 
     # Calculate total production across all pools
     total_production: dict[str, float] = {}
@@ -77,48 +77,54 @@ def allocate_position_budgets(
         )
 
     # Calculate total weighted PA for rate stats
-    total_weighted_pa = 0.0
+    pool_weighted_opb: dict[str, float] = {}
+    pool_weighted_slg: dict[str, float] = {}
+    total_weighted_obp = 0.0
+    total_weighted_slg = 0.0
     for pos, pool in pools.items():
         pa_weight = budget_config["pa_weights"].get(
             pos, budget_config["pa_weights"]["default"]
         )
-        pool_pa = len(pool.rostered_players) * pa_weight
-        pool.weighted_pa = pool_pa
-        total_weighted_pa += pool_pa
+        pool_obp = statistics.mean(
+            [get_player_stat(player, "OBP") for player in pool.rostered_players]
+        )
+        pool_slg = statistics.mean(
+            [get_player_stat(player, "SLG") for player in pool.rostered_players]
+        )
+        pool_weighted_opb[pos] = pool_obp * pa_weight
+        pool_weighted_slg[pos] = pool_slg * pa_weight
+        total_weighted_obp += pool_weighted_opb[pos]
+        total_weighted_slg += pool_weighted_slg[pos]
+
+    total_production["OBP"] = total_weighted_obp
+    total_production["SLG"] = total_weighted_slg
 
     # Allocate to each position
     for pos, pool in pools.items():
-        pool.category_budgets = {}
-        pool.production_share = {}
-
         # Counting stats: by production share
         for category in counting_stats:
             pool_production = sum(
                 get_player_stat(player, category) for player in pool.rostered_players
             )
-            if total_production.get(category, 0) > 0:
-                pool.production_share[category] = (
-                    pool_production / total_production[category]
-                )
-                pool.category_budgets[category] = (
-                    league_budget.category_budgets["hitter"][category]
-                    * pool.production_share[category]
-                )
-            else:
-                pool.production_share[category] = 0.0
-                pool.category_budgets[category] = 0.0
+            pool.production_share[category] = (
+                pool_production / total_production[category]
+            )
+            pool.category_budgets[category] = (
+                league_budget.category_budgets["hitter"][category]
+                * pool.production_share[category]
+            )
 
         # Rate stats: by PA share
-        for category in rate_stats:
-            if total_weighted_pa > 0:
-                pool.production_share[category] = pool.weighted_pa / total_weighted_pa
-                pool.category_budgets[category] = (
-                    league_budget.category_budgets["hitter"][category]
-                    * pool.production_share[category]
-                )
-            else:
-                pool.production_share[category] = 0.0
-                pool.category_budgets[category] = 0.0
+        pool.production_share["OBP"] = pool_weighted_opb[pos] / total_weighted_obp
+        pool.production_share["SLG"] = pool_weighted_slg[pos] / total_weighted_slg
+        pool.category_budgets["OBP"] = (
+            league_budget.category_budgets["hitter"]["OBP"]
+            * pool.production_share["OBP"]
+        )
+        pool.category_budgets["SLG"] = (
+            league_budget.category_budgets["hitter"]["SLG"]
+            * pool.production_share["SLG"]
+        )
 
     return pools
 
@@ -137,24 +143,27 @@ def allocate_pool_budget(
     return pool
 
 
-def calc_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, PositionPool]:
+def calc_pool_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, PositionPool]:
     """Calculate $/Z conversion rate for each position-category."""
+    pools = pools
     for pool in pools.values():
         pool.dollars_per_z = {}
         pool.total_pool_z = {}
 
         for category in pool.category_budgets.keys():
             # Sum of positive Z-scores in rostered tier
-            total_z = sum(
-                max(0.0, player.computed.normalized_z.get(category, 0.0))
+            pool_cat_total_z = sum(
+                max(0.0, player.valuation.normalized_z.get(category, 0.0))
                 for player in pool.rostered_players
             )
 
-            pool.total_pool_z[category] = total_z
+            pool.total_pool_z[category] = pool_cat_total_z
 
-            if total_z > 0:
-                pool.dollars_per_z[category] = pool.category_budgets[category] / total_z
-            else:
-                pool.dollars_per_z[category] = 0.0
+            assert pool_cat_total_z > 0, (
+                f"Total Z-score for {category} in {pool.position} is zero"
+            )
+            pool.dollars_per_z[category] = (
+                pool.category_budgets[category] / pool_cat_total_z
+            )
 
     return pools

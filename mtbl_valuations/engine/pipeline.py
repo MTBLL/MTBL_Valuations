@@ -9,12 +9,11 @@ from mtbl_valuations.domain.models import PositionPool
 from mtbl_valuations.engine.budget import (
     allocate_pool_budget,
     allocate_position_budgets,
-    calc_dollars_per_z,
     calc_league_budget,
+    calc_pool_dollars_per_z,
 )
 from mtbl_valuations.engine.iteration import (
     iterate_to_convergence,
-    stabilize_position_assignments,
 )
 from mtbl_valuations.engine.pools import (
     build_pitcher_pool,
@@ -22,7 +21,7 @@ from mtbl_valuations.engine.pools import (
     build_util_pool,
     dedupe_multi_position_players,
 )
-from mtbl_valuations.engine.valuation import calc_player_dollars
+from mtbl_valuations.engine.valuation import distribute_player_dollars
 from mtbl_valuations.io.exports import export_detailed_position_csvs
 from mtbl_valuations.io.loader import (
     load_batters,
@@ -136,7 +135,7 @@ def run_trp_valuation(
     print("\nPhase 4: Building UTIL pool from stabilized pools...")
 
     # Build UTIL pool from replacement-tier players + pure DHs
-    util_pool = build_util_pool(
+    util_pool: PositionPool = build_util_pool(
         hitter_pools,
         pure_dh_players,
         league_settings["roster_slots"],
@@ -155,39 +154,28 @@ def run_trp_valuation(
     # Add UTIL to hitter pools
     hitter_pools["UTIL"] = util_pool
 
-    # Re-allocate budgets across ALL hitter pools (including UTIL)
-    print("  Re-allocating budgets with UTIL included...")
+    # ========================================================================
+    # Phase 5: Allocate hitter budgets
+    # ========================================================================
+    print("\nPhase 5: Allocating hitter budgets...")
+
     hitter_pools = allocate_position_budgets(hitter_pools, league_budget, budget_config)
-    hitter_pools = calc_dollars_per_z(hitter_pools)
+    hitter_pools = calc_pool_dollars_per_z(hitter_pools)
 
-    # Calculate dollar values for UTIL players
-    from ..domain.models import PositionValuation
+    # Distribute dollars to all hitter players
+    for pos, pool in hitter_pools.items():
+        for player in pool.rostered_players + pool.replacement_players:
+            dollar_values = distribute_player_dollars(player, pool)
+            total_dollars = sum(dollar_values.values())
 
-    for player in util_pool.rostered_players + util_pool.replacement_players:
-        dollar_values = calc_player_dollars(player, util_pool)
-        total_dollars = sum(dollar_values.values())
-
-        if player in util_pool.rostered_players:
-            tier = "ROSTERED"
-        elif player in util_pool.replacement_players:
-            tier = "REPLACEMENT"
-        else:
-            tier = "BELOW_REPLACEMENT"
-
-        valuation = PositionValuation(
-            position="UTIL",
-            normalized_z=player.computed.normalized_z.copy(),
-            dollar_values=dollar_values,
-            total_z=player.computed.total_z,
-            total_dollars=total_dollars,
-            tier=tier,  # type: ignore
-        )
-        player.computed.valuations_by_position["UTIL"] = valuation
+            # Store dollars on the player's valuation
+            player.valuation.dollar_values = dollar_values
+            player.valuation.total_dollars = total_dollars
 
     # ========================================================================
-    # Phase 5: Build pitcher pools
+    # Phase 6: Build pitcher pools
     # ========================================================================
-    print("\nPhase 5: Building pitcher pools...")
+    print("\nPhase 6: Building pitcher pools...")
     sp_pool: dict[str, PositionPool] = {
         "SP": build_pitcher_pool(
             starters,
@@ -213,22 +201,9 @@ def run_trp_valuation(
     rp_pool = iterate_to_convergence(rp_pool, budget_config, league_settings)
 
     # ========================================================================
-    # Phase 6: Calculate league budget structure
+    # Phase 7: Allocate pitcher budgets
     # ========================================================================
-    print("\nPhase 6: Calculating league budget...")
-    league_budget = calc_league_budget(league_settings, budget_config)
-
-    print(f"  Total budget: ${league_budget.total:,.2f}")
-    print(f"  Hitter budget: ${league_budget.hitter_budget:,.2f}")
-    print(f"  Pitcher budget: ${league_budget.pitcher_budget:,.2f}")
-    print(f"    SP budget: ${league_budget.sp_budget:,.2f}")
-    print(f"    RP budget: ${league_budget.rp_budget:,.2f}")
-
-    # ========================================================================
-    # Phase 7: Allocate category budgets to positions
-    # ========================================================================
-    print("\nPhase 7: Allocating category budgets...")
-    hitter_pools = allocate_position_budgets(hitter_pools, league_budget, budget_config)
+    print("\nPhase 7: Allocating pitcher budgets...")
     sp_pool = {
         "SP": allocate_pool_budget(
             sp_pool["SP"],
@@ -243,65 +218,22 @@ def run_trp_valuation(
             budget_config["rp_category_weights"],
         )
     }
+    sp_pool = calc_pool_dollars_per_z(sp_pool)
+    rp_pool = calc_pool_dollars_per_z(rp_pool)
 
     # ========================================================================
-    # Phase 8: Convert Z-scores to dollars
+    # Phase 9: Value pitcher players (no multi-eligibility)
     # ========================================================================
-    print("\nPhase 8: Calculating $/Z rates...")
-    hitter_pools = calc_dollars_per_z(hitter_pools)
-    sp_pool = calc_dollars_per_z(sp_pool)
-    rp_pool = calc_dollars_per_z(rp_pool)
-
-    # ========================================================================
-    # Phase 9: Stabilize hitter position assignments
-    # ========================================================================
-    print("\nPhase 9: Stabilizing hitter position assignments...")
-
-    from ..domain.models import Player
-
-    # Collect all unique hitters across pools (use dict to avoid hashability issues)
-    all_hitters_dict: dict[str, Player] = {}
-    for pool in hitter_pools.values():
-        for player in (
-            pool.rostered_players + pool.replacement_players + pool.below_replacement
-        ):
-            all_hitters_dict[player.id] = player
-
-    all_hitters = list(all_hitters_dict.values())
-
-    hitter_pools = stabilize_position_assignments(
-        hitter_pools,
-        all_hitters,
-        budget_config,
-        league_settings,
-        league_budget,
-    )
-
-    # Update top-level computed fields from primary position valuation
-    for player in all_hitters:
-        if player.computed.primary_position in player.computed.valuations_by_position:
-            primary_val = player.computed.valuations_by_position[
-                player.computed.primary_position
-            ]
-            player.computed.normalized_z = primary_val.normalized_z.copy()
-            player.computed.total_z = primary_val.total_z
-            player.computed.dollar_values = primary_val.dollar_values.copy()
-            player.computed.total_dollars = primary_val.total_dollars
-            player.computed.tier = primary_val.tier
-
-    # ========================================================================
-    # Phase 10: Value pitcher players (no multi-eligibility)
-    # ========================================================================
-    print("\nPhase 10: Calculating pitcher dollar values...")
+    print("\nPhase 9: Calculating pitcher dollar values...")
 
     from ..domain.models import PositionValuation
 
     pitchers = sp_pool | rp_pool
 
     for _, pool in pitchers.items():
-        for player in pool.rostered_players + pool.replacement_players:
+        for rank, player in enumerate(pool.rostered_players + pool.replacement_players):
             # Calculate dollar values for THIS position
-            dollar_values = calc_player_dollars(player, pool)
+            dollar_values = distribute_player_dollars(player, pool)
             total_dollars = sum(dollar_values.values())
 
             # Determine tier within THIS pool
@@ -315,25 +247,24 @@ def run_trp_valuation(
             # Store position-specific valuation
             valuation = PositionValuation(
                 position=pool.position,
-                normalized_z=player.computed.normalized_z.copy(),
-                dollar_values=dollar_values,
-                total_z=player.computed.total_z,
-                total_dollars=total_dollars,
+                normalized_z=player.valuation.normalized_z.copy(),
+                total_z=player.valuation.total_z,
                 tier=tier,  # type: ignore
+                position_rank=rank,
             )
-            player.computed.valuations_by_position[pool.position] = valuation
+            player.valuation.valuations_by_position[pool.position] = valuation
 
             # Also update the main computed values
-            player.computed.dollar_values = dollar_values
-            player.computed.total_dollars = total_dollars
-            player.computed.primary_position = pool.position
+            player.valuation.dollar_values = dollar_values
+            player.valuation.total_dollars = total_dollars
+            player.valuation.primary_position = pool.position
 
     all_pools = hitter_pools | sp_pool | rp_pool
 
     # ========================================================================
-    # Phase 11: Validate
+    # Phase 10: Validate
     # ========================================================================
-    print("\nPhase 11: Validation...")
+    print("\nPhase 10: Validation...")
     validate_budget_balance(all_pools, league_budget)
     validate_tier_counts(
         all_pools, league_settings["roster_slots"], league_settings["num_teams"]
@@ -341,9 +272,9 @@ def run_trp_valuation(
     validate_rlp_z_scores(all_pools)
 
     # ========================================================================
-    # Phase 12: Output
+    # Phase 11: Output
     # ========================================================================
-    print("\nPhase 12: Writing output files...")
+    print("\nPhase 11: Writing output files...")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
