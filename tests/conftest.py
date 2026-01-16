@@ -10,7 +10,12 @@ from typing import List
 import pytest
 from typing_extensions import Any
 
-from mtbl_valuations.domain.models import HitterPlayer, PitcherPlayer, Player
+from mtbl_valuations.domain.models import (
+    HitterPlayer,
+    LeagueBudget,
+    PitcherPlayer,
+    Player,
+)
 from mtbl_valuations.engine.budget import calc_league_budget
 from mtbl_valuations.engine.pipeline import run_trp_valuation
 from mtbl_valuations.io.loader import (
@@ -84,7 +89,7 @@ def budget_config_file():
         "min_replacement_tier_size": 3,
         "max_iterations": 10,
         "convergence_threshold": 0,
-        "bench_reserve_per_team": 1,
+        "bench_reserve_per_team": 5,
         "pa_weights": {
             "C": 500,
             "default": 600,
@@ -135,10 +140,15 @@ def run_trp(batters_file, pitchers_file, league_file, budget_config_file, output
 
 
 @pytest.fixture
-def league_budget(league_file, budget_config_file):
+def budget_config(budget_config_file):
+    """Load budget config from file."""
+    return load_budget_config(budget_config_file)
+
+
+@pytest.fixture
+def league_budget(league_file, budget_config) -> LeagueBudget:
     """Calculate league budget from league file."""
     league_settings = load_league_settings(league_file)
-    budget_config = load_budget_config(budget_config_file)
     return calc_league_budget(league_settings, budget_config)
 
 
@@ -161,10 +171,10 @@ def pitchers(pitchers_file) -> List[PitcherPlayer]:
 
 
 @pytest.fixture
-def player_from_hitters(batters) -> List[Player]:
+def players_from_hitters(batters) -> List[Player]:
     return [b.player for b in batters]
 
 
 @pytest.fixture
-def player_from_pitchers(pitchers) -> List[Player]:
+def players_from_pitchers(pitchers) -> List[Player]:
     return [p.player for p in pitchers]

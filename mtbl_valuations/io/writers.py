@@ -13,24 +13,22 @@ from ..domain.models import PositionPool
 
 def write_valuations_csv(
     output_path: Path,
-    all_pools: list[PositionPool],
+    all_pools: dict[str, PositionPool],
     categories: dict[str, list[str]],
 ) -> None:
     """Write player valuations to CSV."""
     rows = []
 
-    for pool in all_pools:
+    for pos, pool in all_pools.items():
         all_players = (
-            pool.rostered_players
-            + pool.replacement_players
-            + pool.below_replacement
+            pool.rostered_players + pool.replacement_players + pool.below_replacement
         )
 
         for player in all_players:
             row = {
                 "player_id": player.id,
                 "name": player.name,
-                "position": pool.position,
+                "position": pos,
                 "role": pool.role,
                 "total_z": round(player.computed.total_z, 3),
                 "dollar_value": round(player.computed.total_dollars, 2),
@@ -57,14 +55,14 @@ def write_valuations_csv(
 
 
 def write_position_summary_csv(
-    output_path: Path, all_pools: list[PositionPool]
+    output_path: Path, all_pools: dict[str, PositionPool]
 ) -> None:
     """Write position summary to CSV."""
     rows = []
 
-    for pool in all_pools:
+    for pos, pool in all_pools.items():
         row = {
-            "position": pool.position,
+            "position": pos,
             "role": pool.role,
             "rostered_count": len(pool.rostered_players),
             "replacement_tier_count": len(pool.replacement_players),
@@ -89,7 +87,7 @@ def write_position_summary_csv(
 def write_player_json(
     output_path: Path,
     input_data: list[dict[str, Any]],
-    all_pools: list[PositionPool],
+    all_pools: dict[str, PositionPool],
 ) -> None:
     """
     Write enriched player JSON with valuation data.
@@ -98,11 +96,9 @@ def write_player_json(
     # Build lookup of player valuations
     player_valuations: dict[str, dict[str, Any]] = {}
 
-    for pool in all_pools:
+    for pool in all_pools.values():
         all_players = (
-            pool.rostered_players
-            + pool.replacement_players
-            + pool.below_replacement
+            pool.rostered_players + pool.replacement_players + pool.below_replacement
         )
 
         for player in all_players:

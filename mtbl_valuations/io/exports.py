@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
+
 import pandas as pd
 
-from ..domain.models import PositionPool
+from ..domain.models import HitterPlayer, PitcherPlayer, PositionPool
 
 
 def export_hitter_position_csv(
@@ -62,6 +64,7 @@ def export_hitter_position_csv(
         }
 
         # Stats for each category: raw stat, z-score, dollars
+        player = cast(HitterPlayer, player)
         stats = player.stats  # type: ignore
         for cat in categories:
             # Get raw stat value
@@ -131,6 +134,7 @@ def export_pitcher_pool_csv(
         }
 
         # Stats for each category: raw stat, z-score, dollars
+        player = cast(PitcherPlayer, player)
         stats = player.stats  # type: ignore
         for cat in categories:
             # Get raw stat value
@@ -167,7 +171,7 @@ def export_pitcher_pool_csv(
 
 
 def export_detailed_position_csvs(
-    hitter_pools: list[PositionPool],
+    hitter_pools: dict[str, PositionPool],
     sp_pool: PositionPool,
     rp_pool: PositionPool,
     output_dir: Path,
@@ -178,11 +182,9 @@ def export_detailed_position_csvs(
     print("\n  Exporting detailed position CSVs...")
 
     # Export each hitter position
-    for pool in hitter_pools:
-        filename = f"{pool.position.lower()}_detailed.csv"
-        export_hitter_position_csv(
-            pool, output_dir / filename, hitter_categories
-        )
+    for pos, pool in hitter_pools.items():
+        filename = f"{pos.lower()}_detailed.csv"
+        export_hitter_position_csv(pool, output_dir / filename, hitter_categories)
         print(f"    ✓ Wrote {output_dir / filename}")
 
     # Export SP

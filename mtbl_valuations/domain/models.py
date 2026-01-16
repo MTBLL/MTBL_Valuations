@@ -49,7 +49,6 @@ class PositionValuation(MTBLBaseModel):
     """Valuation for a specific position context."""
 
     position: str
-    raw_z: dict[str, float]
     normalized_z: dict[str, float]
     dollar_values: dict[str, float]
     total_z: float
@@ -61,12 +60,11 @@ class ComputedValues(MTBLBaseModel):
     """Computed valuation fields."""
 
     primary_position: str = ""
-    raw_z: dict[str, float] = Field(default_factory=dict)
     normalized_z: dict[str, float] = Field(default_factory=dict)
     total_z: float = 0.0
     dollar_values: dict[str, float] = Field(default_factory=dict)
     total_dollars: float = 0.0
-    tier: Tier = "BELOW_REPLACEMENT"
+    tier: Tier = "REPLACEMENT"
     valuations_by_position: dict[str, "PositionValuation"] = Field(default_factory=dict)
 
 
@@ -109,7 +107,8 @@ class PositionPool(MTBLBaseModel):
     rostered_tier_means: dict[str, float] = Field(default_factory=dict)
     rostered_tier_stdevs: dict[str, float] = Field(default_factory=dict)
     rlp_archetype: dict[str, float] = Field(default_factory=dict)
-    rlp_raw_z_avg: dict[str, float] = Field(default_factory=dict)
+    rlp_raw_avg: dict[str, float] = Field(default_factory=dict)
+    rlp_z_baseline: dict[str, float] = Field(default_factory=dict)
     category_budgets: dict[str, float] = Field(default_factory=dict)
     dollars_per_z: dict[str, float] = Field(default_factory=dict)
     total_pool_z: dict[str, float] = Field(default_factory=dict)

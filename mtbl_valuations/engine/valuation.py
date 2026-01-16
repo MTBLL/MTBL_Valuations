@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from typing import Any
 
 from ..domain.models import HitterStats, PitcherStats, Player, PositionPool, Role
@@ -26,13 +27,19 @@ def get_categories(role: Role, league_settings: dict[str, Any]) -> list[str]:
         return ["IP" if c == "OUTS" else c for c in cats if c != "QS"]
 
 
-def calc_means(players: list[Player], field: str, is_stat: bool = True) -> dict[str, float]:
+def calc_means(
+    players: list[Player], field: str, is_stat: bool = True
+) -> dict[str, float]:
     """Calculate means for all categories."""
     if not players:
         return {}
 
     # Get first player to determine categories
-    if not hasattr(players[0], "stats") if is_stat else not hasattr(players[0], "computed"):
+    if (
+        not hasattr(players[0], "stats")
+        if is_stat
+        else not hasattr(players[0], "computed")
+    ):
         return {}
 
     sample_obj = players[0].stats if is_stat else players[0].computed  # type: ignore
@@ -75,7 +82,9 @@ def calc_means(players: list[Player], field: str, is_stat: bool = True) -> dict[
     return means
 
 
-def calc_stdevs(players: list[Player], field: str, is_stat: bool = True) -> dict[str, float]:
+def calc_stdevs(
+    players: list[Player], field: str, is_stat: bool = True
+) -> dict[str, float]:
     """Calculate standard deviations for all categories."""
     if not players:
         return {}
@@ -145,7 +154,9 @@ def get_player_stat(player: Player, category: str) -> float:
     return float(value)
 
 
-def calc_raw_z(player: Player, pool: PositionPool, categories: list[str]) -> dict[str, float]:
+def calc_raw_z(
+    player: Player, pool: PositionPool, categories: list[str]
+) -> dict[str, float]:
     """Calculate raw Z-scores for a player."""
     raw_z = {}
 
@@ -162,17 +173,6 @@ def calc_raw_z(player: Player, pool: PositionPool, categories: list[str]) -> dic
             raw_z[category] = (value - mean) / stdev
 
     return raw_z
-
-
-def calc_normalized_z(player: Player, pool: PositionPool) -> dict[str, float]:
-    """Calculate normalized Z-scores (subtract RLP baseline)."""
-    normalized_z = {}
-
-    for category, raw_z_value in player.computed.raw_z.items():
-        rlp_avg = pool.rlp_raw_z_avg.get(category, 0.0)
-        normalized_z[category] = raw_z_value - rlp_avg
-
-    return normalized_z
 
 
 def calc_player_dollars(player: Player, pool: PositionPool) -> dict[str, float]:
@@ -198,7 +198,6 @@ def calc_z_scores_for_archetype(
 
     Returns: {'HR': -0.5, 'R': -1.2, ...}  # Z-SCORES
     """
-    import statistics
 
     z_scores = {}
     for category, archetype_value in archetype_stats.items():

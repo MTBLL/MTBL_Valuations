@@ -2,41 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+import statistics
+from typing import TYPE_CHECKING, Any, Iterable
 
-from ..domain.models import Player, PositionPool, PositionValuation
+from mtbl_valuations.domain.models import Player, PositionPool, PositionValuation
+from mtbl_valuations.engine.valuation import get_player_stat
 
 if TYPE_CHECKING:
-    from ..domain.models import LeagueBudget
-from .pools import rebuild_replacement_tier
-from .valuation import (
-    calc_raw_z,
-    calc_normalized_z,
+    from mtbl_valuations.domain.models import LeagueBudget
+from mtbl_valuations.engine.pools import rebuild_replacement_tier_on_z
+from mtbl_valuations.engine.valuation import (
     get_categories,
 )
 
 
-def _ensure_position_valuation(player: Player, position: str) -> None:
-    """Ensure a PositionValuation exists for this position."""
-    if position not in player.computed.valuations_by_position:
-        player.computed.valuations_by_position[position] = PositionValuation(
-            position=position,
-            raw_z={},
-            normalized_z={},
-            dollar_values={},
-            total_z=0.0,
-            total_dollars=0.0,
-            tier="BELOW_REPLACEMENT",
-        )
-
-
 def iterate_to_convergence(
-    pools: list[PositionPool],
+    pools: dict[str, PositionPool],
     budget_config: dict[str, Any],
     league_settings: dict[str, Any],
     composite_rlp_archetype: dict[str, float] | None = None,
-    track_per_pool: bool = False,
-) -> list[PositionPool]:
+    track_z_per_pool: bool = False,
+) -> dict[str, PositionPool]:
     """
     Iterate until tier membership stabilizes.
     Recalculates Z-scores based on rostered tier, re-ranks, and reassigns tiers.
@@ -58,131 +44,74 @@ def iterate_to_convergence(
     for iteration in range(1, max_iterations + 1):
         changes = 0
 
-        for pool in pools:
-            # Get categories for this pool's role
+        for pos, pool in pools.items():
             categories = get_categories(pool.role, league_settings)
 
-            # Step 1: Calculate rostered tier mean and stdev per category
-            pool.rostered_tier_means = {}
+            # Define the player sets once (and as lists, because you loop multiple times)
+            rostered = [p for p in pool.rostered_players if hasattr(p, "stats")]
+            rlp_tier = [p for p in pool.replacement_players if hasattr(p, "stats")]
+            below = [p for p in pool.below_replacement if hasattr(p, "stats")]
+            all_pool_players = rostered + rlp_tier + below
+
+            # Step 1: rostered-tier mean & stdev (scale)
             pool.rostered_tier_stdevs = {}
+            for cat in categories:
+                vals = [get_player_stat(p, cat) for p in rostered]
+                pool.rostered_tier_stdevs[cat] = _safe_stdev(vals)
 
-            for category in categories:
-                values = []
-                for player in pool.rostered_players:
-                    if hasattr(player, "stats"):
-                        from .valuation import get_player_stat
-
-                        val = get_player_stat(player, category)
-                        values.append(val)
-
-                if values:
-                    pool.rostered_tier_means[category] = sum(values) / len(values)
-
-                    if len(values) > 1:
-                        mean = pool.rostered_tier_means[category]
-                        variance = sum((v - mean) ** 2 for v in values) / len(values)
-                        pool.rostered_tier_stdevs[category] = variance**0.5
-                    else:
-                        pool.rostered_tier_stdevs[category] = 1.0
-                else:
-                    pool.rostered_tier_means[category] = 0.0
-                    pool.rostered_tier_stdevs[category] = 1.0
-
-            # Step 2: Calculate raw Z-scores for all players
-            all_pool_players = (
-                pool.rostered_players
-                + pool.replacement_players
-                + pool.below_replacement
-            )
-
-            for player in all_pool_players:
-                raw_z = calc_raw_z(player, pool, categories)
-                if track_per_pool:
-                    _ensure_position_valuation(player, pool.position)
-                    player.computed.valuations_by_position[pool.position].raw_z = raw_z
-                else:
-                    player.computed.raw_z = raw_z
-
-            # Step 3: Calculate RLP average raw Z (the baseline shift)
-            pool.rlp_raw_z_avg = {}
+            # Step 2: replacement-tier RAW mean (baseline)
+            # composite_rlp_archetype must be a dict[str, float] of raw means per category
             if composite_rlp_archetype is not None:
-                # Use composite RLP archetype (for UTIL)
-                from .valuation import calc_z_scores_for_archetype
-
-                pool.rlp_raw_z_avg = calc_z_scores_for_archetype(
-                    composite_rlp_archetype, pool.rostered_players
-                )
-            elif pool.replacement_players:
-                # Use pool's own RLP tier (normal case)
-                for category in categories:
-                    if track_per_pool:
-                        rlp_values = [
-                            p.computed.valuations_by_position[pool.position].raw_z.get(
-                                category, 0.0
-                            )
-                            for p in pool.replacement_players
-                        ]
-                    else:
-                        rlp_values = [
-                            p.computed.raw_z.get(category, 0.0)
-                            for p in pool.replacement_players
-                        ]
-                    if rlp_values:
-                        pool.rlp_raw_z_avg[category] = sum(rlp_values) / len(
-                            rlp_values
-                        )
-                    else:
-                        pool.rlp_raw_z_avg[category] = 0.0
+                pool.rlp_raw_avg = composite_rlp_archetype
             else:
-                for category in categories:
-                    pool.rlp_raw_z_avg[category] = 0.0
+                pool.rlp_raw_avg = {
+                    cat: _safe_mean(get_player_stat(p, cat) for p in rlp_tier)
+                    for cat in categories
+                }
 
-            # Step 4: Normalize Z-scores (subtract RLP average)
+            # Step 3: compute above-replacement z per player + total
             for player in all_pool_players:
-                if track_per_pool:
-                    raw_z = player.computed.valuations_by_position[pool.position].raw_z
-                    normalized_z = {
-                        cat: raw_z.get(cat, 0.0) - pool.rlp_raw_z_avg.get(cat, 0.0)
-                        for cat in categories
-                    }
-                    player.computed.valuations_by_position[
-                        pool.position
-                    ].normalized_z = normalized_z
-                    player.computed.valuations_by_position[
-                        pool.position
-                    ].total_z = sum(normalized_z.values())
-                else:
-                    player.computed.normalized_z = calc_normalized_z(player, pool)
-                    player.computed.total_z = sum(
-                        player.computed.normalized_z.values()
+                z_by_cat: dict[str, float] = {}
+                for cat in categories:
+                    x = get_player_stat(player, cat)
+                    mu_rlp = pool.rlp_raw_avg.get(cat)
+                    assert isinstance(mu_rlp, float), (
+                        f"Missing raw mean for category {cat}"
                     )
+                    sd = pool.rostered_tier_stdevs.get(cat, 0.0)
+
+                    baseline_delta = (
+                        (x - mu_rlp) if cat not in ["ERA", "WHIP"] else (mu_rlp - x)
+                    )
+                    z_score = baseline_delta / sd if sd else 0.0
+                    z_by_cat[cat] = z_score
+
+                _store_z_scores(player, pos, z_by_cat, track_z_per_pool)
 
             # Step 5: Re-rank by total Z
-            def get_total_z(p: Player) -> float:
-                if track_per_pool:
-                    return p.computed.valuations_by_position[pool.position].total_z
+            def _get_total_z(p: Player) -> float:
+                if track_z_per_pool:
+                    return p.computed.valuations_by_position[pos].total_z
                 return p.computed.total_z
 
-            all_pool_players = sorted(
-                all_pool_players, key=get_total_z, reverse=True
-            )
+            all_pool_players = sorted(all_pool_players, key=_get_total_z, reverse=True)
 
             # Step 6: Reassign tiers based on new ranking
-            new_rostered = all_pool_players[: pool.roster_slots]
+            new_rostered_tier = all_pool_players[: pool.roster_slots]
 
             # Check for changes
-            old_ids = {player.id for player in pool.rostered_players}
-            new_ids = {player.id for player in new_rostered}
+            old_ids: set[str] = {player.id for player in pool.rostered_players}
+            new_ids: set[str] = {player.id for player in new_rostered_tier}
             if old_ids != new_ids:
                 changes += 1
 
             # Update tiers
-            pool.rostered_players = new_rostered
-            pool.replacement_players = rebuild_replacement_tier(
+            pool.rostered_players = new_rostered_tier
+            pool.replacement_players = rebuild_replacement_tier_on_z(
                 all_pool_players,
                 pool,
                 budget_config,
-                use_per_pool_z=track_per_pool,
+                use_per_pool_z=track_z_per_pool,
             )
 
             # Update below_replacement
@@ -193,28 +122,7 @@ def iterate_to_convergence(
                 p for p in all_pool_players if p.id not in rostered_and_replacement_ids
             ]
 
-            # Mark player tiers
-            for player in pool.rostered_players:
-                if track_per_pool:
-                    player.computed.valuations_by_position[
-                        pool.position
-                    ].tier = "ROSTERED"
-                else:
-                    player.computed.tier = "ROSTERED"
-            for player in pool.replacement_players:
-                if track_per_pool:
-                    player.computed.valuations_by_position[
-                        pool.position
-                    ].tier = "REPLACEMENT"
-                else:
-                    player.computed.tier = "REPLACEMENT"
-            for player in pool.below_replacement:
-                if track_per_pool:
-                    player.computed.valuations_by_position[
-                        pool.position
-                    ].tier = "BELOW_REPLACEMENT"
-                else:
-                    player.computed.tier = "BELOW_REPLACEMENT"
+            _assign_player_tiers(pool, track_z_per_pool)
 
         # Check convergence
         if changes <= convergence_threshold:
@@ -226,14 +134,51 @@ def iterate_to_convergence(
     return pools
 
 
+### ===     helper functions    === ###
+
+
+def _ensure_position_valuation(player: Player, position: str) -> None:
+    """Ensure a PositionValuation exists for this position."""
+    if position not in player.computed.valuations_by_position:
+        player.computed.valuations_by_position[position] = PositionValuation(
+            position=position,
+            normalized_z={},
+            dollar_values={},
+            total_z=0.0,
+            total_dollars=0.0,
+            tier="BELOW_REPLACEMENT",
+        )
+
+
+def _assign_player_tiers(pool: PositionPool, track_z_per_pool: bool) -> None:
+    # Mark player tiers
+    for player in pool.rostered_players:
+        if track_z_per_pool:
+            player.computed.valuations_by_position[pool.position].tier = "ROSTERED"
+        else:
+            player.computed.tier = "ROSTERED"
+    for player in pool.replacement_players:
+        if track_z_per_pool:
+            player.computed.valuations_by_position[pool.position].tier = "REPLACEMENT"
+        else:
+            player.computed.tier = "REPLACEMENT"
+    for player in pool.below_replacement:
+        if track_z_per_pool:
+            player.computed.valuations_by_position[
+                pool.position
+            ].tier = "BELOW_REPLACEMENT"
+        else:
+            player.computed.tier = "BELOW_REPLACEMENT"
+
+
 def stabilize_position_assignments(
-    pools: list[PositionPool],
+    pools: dict[str, PositionPool],
     all_players: list[Player],
     budget_config: dict[str, Any],
     league_settings: dict[str, Any],
     league_budget: LeagueBudget,
     max_stability_iterations: int = 10,
-) -> list[PositionPool]:
+) -> dict[str, PositionPool]:
     """
     Iterate position assignments until no player would benefit from changing.
 
@@ -270,18 +215,18 @@ def stabilize_position_assignments(
         pools = allocate_position_budgets(pools, league_budget, budget_config)
         pools = calc_dollars_per_z(pools)
 
-        for pool in pools:
+        for pos, pool in pools.items():
             for player in pool.rostered_players + pool.replacement_players:
                 dollar_values = calc_player_dollars(player, pool)
                 total_dollars = sum(dollar_values.values())
 
                 # Store in per-position valuation
-                if pool.position in player.computed.valuations_by_position:
+                if pos in player.computed.valuations_by_position:
                     player.computed.valuations_by_position[
-                        pool.position
+                        pos
                     ].dollar_values = dollar_values
                     player.computed.valuations_by_position[
-                        pool.position
+                        pos
                     ].total_dollars = total_dollars
 
         # Step 2: Assign to best position
@@ -300,9 +245,40 @@ def stabilize_position_assignments(
             pools,
             budget_config,
             league_settings,
-            track_per_pool=False,  # Now single-position
+            track_z_per_pool=False,  # Now single-position
         )
     else:
         print(f"  Max stability iterations ({max_stability_iterations}) reached")
 
     return pools
+
+
+def _store_z_scores(
+    player: Player, pos: str, normalized_z: dict[str, float], track_per_pool: bool
+) -> None:
+    total_z = sum(normalized_z.values())
+    if track_per_pool:
+        _ensure_position_valuation(player, pos)
+        player.computed.valuations_by_position[pos].normalized_z = normalized_z
+        player.computed.valuations_by_position[pos].total_z = total_z
+    else:
+        player.computed.normalized_z = normalized_z
+        player.computed.total_z = total_z
+
+
+def _get_bucket(player: Player, pos: str, track_per_pool: bool):
+    if track_per_pool:
+        _ensure_position_valuation(player, pos)
+        return player.computed.valuations_by_position[pos]
+    return player.computed
+
+
+def _safe_mean(nums: Iterable[float]) -> float:
+    nums = list(nums)
+    return statistics.mean(nums) if nums else 0.0
+
+
+def _safe_stdev(nums: Iterable[float]) -> float:
+    nums = list(nums)
+    # statistics.stdev requires at least 2 points; decide what you want otherwise
+    return statistics.stdev(nums) if len(nums) >= 2 else 0.0

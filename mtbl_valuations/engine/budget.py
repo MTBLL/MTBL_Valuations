@@ -56,10 +56,10 @@ def calc_league_budget(
 
 
 def allocate_position_budgets(
-    pools: list[PositionPool],
+    pools: dict[str, PositionPool],
     league_budget: LeagueBudget,
     budget_config: dict[str, Any],
-) -> list[PositionPool]:
+) -> dict[str, PositionPool]:
     """
     Allocate category budgets to each position based on production share.
     Counting stats by actual production, rate stats by weighted PA.
@@ -72,33 +72,29 @@ def allocate_position_budgets(
     total_production: dict[str, float] = {}
     for category in counting_stats:
         total_production[category] = sum(
-            sum(
-                get_player_stat(player, category)
-                for player in pool.rostered_players
-            )
-            for pool in pools
+            sum(get_player_stat(player, category) for player in pool.rostered_players)
+            for _, pool in pools.items()
         )
 
     # Calculate total weighted PA for rate stats
     total_weighted_pa = 0.0
-    for pool in pools:
+    for pos, pool in pools.items():
         pa_weight = budget_config["pa_weights"].get(
-            pool.position, budget_config["pa_weights"]["default"]
+            pos, budget_config["pa_weights"]["default"]
         )
         pool_pa = len(pool.rostered_players) * pa_weight
         pool.weighted_pa = pool_pa
         total_weighted_pa += pool_pa
 
     # Allocate to each position
-    for pool in pools:
+    for pos, pool in pools.items():
         pool.category_budgets = {}
         pool.production_share = {}
 
         # Counting stats: by production share
         for category in counting_stats:
             pool_production = sum(
-                get_player_stat(player, category)
-                for player in pool.rostered_players
+                get_player_stat(player, category) for player in pool.rostered_players
             )
             if total_production.get(category, 0) > 0:
                 pool.production_share[category] = (
@@ -141,9 +137,9 @@ def allocate_pool_budget(
     return pool
 
 
-def calc_dollars_per_z(pools: list[PositionPool]) -> list[PositionPool]:
+def calc_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, PositionPool]:
     """Calculate $/Z conversion rate for each position-category."""
-    for pool in pools:
+    for pool in pools.values():
         pool.dollars_per_z = {}
         pool.total_pool_z = {}
 
@@ -157,9 +153,7 @@ def calc_dollars_per_z(pools: list[PositionPool]) -> list[PositionPool]:
             pool.total_pool_z[category] = total_z
 
             if total_z > 0:
-                pool.dollars_per_z[category] = (
-                    pool.category_budgets[category] / total_z
-                )
+                pool.dollars_per_z[category] = pool.category_budgets[category] / total_z
             else:
                 pool.dollars_per_z[category] = 0.0
 
