@@ -34,6 +34,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "no_cache: disable fixture caching for this test",
+]
 
 [tool.coverage.run]
 omit = ["mtbl_valuations/__main__.py"]

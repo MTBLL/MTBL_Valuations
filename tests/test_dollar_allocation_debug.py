@@ -5,6 +5,30 @@ from __future__ import annotations
 import pandas as pd
 
 
+def _get_detailed_file(position: str, role: str, run_trp):
+    # Build filename
+    if role == "HITTER":
+        filename = f"{position.lower()}_detailed.csv"
+    elif role == "SP":
+        filename = "sp_detailed.csv"
+    elif role == "RP":
+        filename = "rp_detailed.csv"
+    else:
+        return None
+
+    detailed_file = run_trp / filename
+    return detailed_file if detailed_file.exists() else None
+
+
+def _iter_detailed_files(position_summary: pd.DataFrame, run_trp):
+    for _, row in position_summary.iterrows():
+        position = row["position"]
+        role = row["role"]
+        detailed_file = _get_detailed_file(position, role, run_trp)
+        if detailed_file is not None:
+            yield position, role, detailed_file
+
+
 class TestDollarAllocationDebug:
     """Debug tests for dollar allocation."""
 
@@ -18,24 +42,9 @@ class TestDollarAllocationDebug:
         total_rlp_dollars = 0.0
         total_below_dollars = 0.0
 
-        for _, row in position_summary.iterrows():
-            position = row["position"]
-            role = row["role"]
-
-            # Build filename
-            if role == "HITTER":
-                filename = f"{position.lower()}_detailed.csv"
-            elif role == "SP":
-                filename = "sp_detailed.csv"
-            elif role == "RP":
-                filename = "rp_detailed.csv"
-            else:
-                continue
-
-            detailed_file = run_trp / filename
-            if not detailed_file.exists():
-                continue
-
+        for position, role, detailed_file in _iter_detailed_files(
+            position_summary, run_trp
+        ):
             df = pd.read_csv(detailed_file)
 
             # Group by tier
@@ -95,24 +104,9 @@ class TestDollarAllocationDebug:
 
         negative_z_players = []
 
-        for _, row in position_summary.iterrows():
-            position = row["position"]
-            role = row["role"]
-
-            # Build filename
-            if role == "HITTER":
-                filename = f"{position.lower()}_detailed.csv"
-            elif role == "SP":
-                filename = "sp_detailed.csv"
-            elif role == "RP":
-                filename = "rp_detailed.csv"
-            else:
-                continue
-
-            detailed_file = run_trp / filename
-            if not detailed_file.exists():
-                continue
-
+        for position, role, detailed_file in _iter_detailed_files(
+            position_summary, run_trp
+        ):
             df = pd.read_csv(detailed_file)
 
             # Get rostered players with negative z
@@ -152,23 +146,16 @@ class TestDollarAllocationDebug:
             print(f"{position} ({role}):")
 
             # Get category budgets from position summary
-            dollars_per_z_cols = [col for col in row.index if col.startswith("dollars_per_z_")]
+            dollars_per_z_cols = [
+                col for col in row.index if col.startswith("dollars_per_z_")
+            ]
 
             if not dollars_per_z_cols:
                 continue
 
-            # Load detailed CSV
-            if role == "HITTER":
-                filename = f"{position.lower()}_detailed.csv"
-            elif role == "SP":
-                filename = "sp_detailed.csv"
-            elif role == "RP":
-                filename = "rp_detailed.csv"
-            else:
-                continue
+            detailed_file = _get_detailed_file(position, role, run_trp)
 
-            detailed_file = run_trp / filename
-            if not detailed_file.exists():
+            if detailed_file is None:
                 continue
 
             df = pd.read_csv(detailed_file)

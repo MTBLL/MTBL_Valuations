@@ -6,7 +6,6 @@ import pandas as pd
 import pytest
 
 
-@pytest.mark.skip("broken")
 class TestBudgetCalculation:
     """Test league budget calculation."""
 
@@ -99,42 +98,36 @@ class TestRosteredTierBudget:
 class TestPositionPoolBudgets:
     """Test position pool budget allocation."""
 
-    def test_position_budgets_sum_to_hitter_budget(self, run_trp, league_budget):
-        """Test that all hitter position budgets sum to total hitter budget."""
+    @pytest.mark.parametrize(
+        ("role_filter", "expected_budget_attr", "label"),
+        [
+            ("HITTER", "hitter_budget", "hitter"),
+            (["SP", "RP"], "pitcher_budget", "pitcher"),
+        ],
+    )
+    def test_position_budgets_sum_to_budget(
+        self, run_trp, league_budget, role_filter, expected_budget_attr, label
+    ):
+        """Test that position budgets sum to the expected total."""
         position_summary = pd.read_csv(run_trp / "position_summary.csv")
 
-        # Get hitter pools only
-        hitter_pools = position_summary[position_summary["role"] == "HITTER"]
+        if isinstance(role_filter, list):
+            pools = position_summary[position_summary["role"].isin(role_filter)]
+        else:
+            pools = position_summary[position_summary["role"] == role_filter]
 
-        total_position_budgets = hitter_pools["total_budget"].sum()
+        total_position_budgets = pools["total_budget"].sum()
+        expected_budget = getattr(league_budget, expected_budget_attr)
 
-        # Should match hitter budget (within tolerance)
-        difference = abs(total_position_budgets - league_budget.hitter_budget)
+        # Should match expected budget (within tolerance)
+        difference = abs(total_position_budgets - expected_budget)
         assert difference < 1.0, (
-            f"Sum of hitter position budgets (${total_position_budgets:.2f}) "
-            f"should match hitter budget (${league_budget.hitter_budget:.2f}), "
-            f"difference: ${difference:.2f}"
-        )
-
-    def test_pitcher_budgets_sum_to_pitcher_budget(self, run_trp, league_budget):
-        """Test that SP + RP budgets sum to total pitcher budget."""
-        position_summary = pd.read_csv(run_trp / "position_summary.csv")
-
-        # Get pitcher pools only
-        pitcher_pools = position_summary[position_summary["role"].isin(["SP", "RP"])]
-
-        total_position_budgets = pitcher_pools["total_budget"].sum()
-
-        # Should match pitcher budget (within tolerance)
-        difference = abs(total_position_budgets - league_budget.pitcher_budget)
-        assert difference < 1.0, (
-            f"Sum of pitcher position budgets (${total_position_budgets:.2f}) "
-            f"should match pitcher budget (${league_budget.pitcher_budget:.2f}), "
+            f"Sum of {label} position budgets (${total_position_budgets:.2f}) "
+            f"should match {label} budget (${expected_budget:.2f}), "
             f"difference: ${difference:.2f}"
         )
 
 
-@pytest.mark.skip("broken")
 class TestDollarsPerZ:
     """Test $/Z rate calculations."""
 

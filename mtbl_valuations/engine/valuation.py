@@ -154,27 +154,6 @@ def get_player_stat(player: Player, category: str) -> float:
     return float(value)
 
 
-def calc_raw_z(
-    player: Player, pool: PositionPool, categories: list[str]
-) -> dict[str, float]:
-    """Calculate raw Z-scores for a player."""
-    raw_z = {}
-
-    for category in categories:
-        mean = pool.rostered_tier_means.get(category, 0.0)
-        stdev = pool.rostered_tier_stdevs.get(category, 1.0)
-        value = get_player_stat(player, category)
-
-        if stdev == 0:
-            raw_z[category] = 0.0
-        elif is_inverted(category):  # ERA, WHIP
-            raw_z[category] = (mean - value) / stdev
-        else:
-            raw_z[category] = (value - mean) / stdev
-
-    return raw_z
-
-
 def distribute_player_dollars(player: Player, pool: PositionPool) -> dict[str, float]:
     """Calculate dollar values per category for a player."""
     dollar_values = {}

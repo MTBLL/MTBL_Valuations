@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from ..domain.models import Player, PositionPool, Role
@@ -70,6 +71,10 @@ def build_position_pools(
     pools: dict[str, PositionPool] = {}
 
     for position in valid_positions:
+        _debug(
+            f"[build_position_pools] {position}: total_players={len(players)} "
+            f"num_teams={num_teams} roster_slots={roster_slots.get(position, 0)}"
+        )
         pool = PositionPool(
             position=position,
             role=role,
@@ -91,12 +96,23 @@ def build_position_pools(
             position_players, key=get_composite_metric, reverse=True
         )
 
+        _debug(
+            f"[build_position_pools] {position}: eligible_players={len(position_players)} "
+            f"pool_roster_slots={pool.roster_slots}"
+        )
+
         # Initial tier assignment
         pool.rostered_players = position_players[: pool.roster_slots]
 
         # Replacement tier: within X% of last rostered player
         if pool.rostered_players:
             pool = _build_replacement_tier(pool, position_players, budget_config)
+            _debug(
+                f"[build_position_pools] {position}: rostered={len(pool.rostered_players)} "
+                f"replacement={len(pool.replacement_players)} below={len(pool.below_replacement)}"
+            )
+        else:
+            _debug(f"[build_position_pools] {position}: no rostered players")
 
         pools[position] = pool
 
@@ -196,12 +212,23 @@ def _build_replacement_tier(
         if get_composite_metric(p) >= threshold
     ]
 
+    remaining = len(position_players) - pool.roster_slots
+    if remaining <= 0:
+        _debug(
+            f"[build_replacement_tier] {pool.position}: no remaining players "
+            f"(eligible={len(position_players)} roster_slots={pool.roster_slots})"
+        )
+
     # Enforce minimum tier size
     min_size = budget_config["min_replacement_tier_size"]
     if len(replacement_candidates) < min_size:
         replacement_candidates = position_players[
             pool.roster_slots : pool.roster_slots + min_size
         ]
+        _debug(
+            f"[build_replacement_tier] {pool.position}: enforcing min_size={min_size} "
+            f"replacement={len(replacement_candidates)} remaining={remaining}"
+        )
 
     pool.replacement_players = replacement_candidates
     pool.below_replacement = position_players[
@@ -329,6 +356,10 @@ def rebuild_pools_after_assignment(
         The same pools with non-primary players removed.
     """
     for pos, pool in pools.items():
+        pre_rostered = len(pool.rostered_players)
+        pre_replacement = len(pool.replacement_players)
+        pre_below = len(pool.below_replacement)
+
         # Filter to only players assigned to this position
         pool.rostered_players = [
             p for p in pool.rostered_players if p.valuation.primary_position == pos
@@ -340,11 +371,28 @@ def rebuild_pools_after_assignment(
             p for p in pool.below_replacement if p.valuation.primary_position == pos
         ]
 
+        post_rostered = len(pool.rostered_players)
+        post_replacement = len(pool.replacement_players)
+        post_below = len(pool.below_replacement)
+
+        if _debug_enabled() and (
+            pre_rostered != post_rostered
+            or pre_replacement != post_replacement
+            or pre_below != post_below
+        ):
+            _debug(
+                f"[rebuild_pools_after_assignment] {pos}: "
+                f"rostered {pre_rostered}->{post_rostered}, "
+                f"replacement {pre_replacement}->{post_replacement}, "
+                f"below {pre_below}->{post_below}"
+            )
+
     return pools
 
 
 def dedupe_multi_position_players(
     pools: dict[str, PositionPool],
+    budget_config: dict[str, Any] | None = None,
 ) -> tuple[dict[str, PositionPool], int]:
     """
     Assign multi-position players to their highest-ranked position and remove from others.
@@ -358,10 +406,17 @@ def dedupe_multi_position_players(
     Returns:
         Tuple of (cleaned pools, number of players reassigned).
     """
-    # Collect all unique players across pools
+    # Capture target replacement tier sizes before dedupe/rebuild
+    target_replacement_sizes = {
+        pos: len(pool.replacement_players) for pos, pool in pools.items()
+    }
+
+    # Collect all unique players across pools (rostered + replacement + below)
     seen_players: dict[str, Player] = {}
     for pool in pools.values():
-        for player in pool.rostered_players:
+        for player in (
+            pool.rostered_players + pool.replacement_players + pool.below_replacement
+        ):
             seen_players[player.id] = player
 
     # Assign each player to their best-ranked position
@@ -388,7 +443,101 @@ def dedupe_multi_position_players(
             changes += 1
             player.valuation.primary_position = best_pos
 
+    _debug(
+        f"[dedupe_multi_position_players] reassigned_players={changes} "
+        f"unique_players={len(seen_players)}"
+    )
+
     # Now remove players from pools where they're not assigned
     pools = rebuild_pools_after_assignment(pools)
+    pools = _refill_tiers_after_dedupe(
+        pools, target_replacement_sizes, budget_config
+    )
+
+    if _debug_enabled():
+        for pos, pool in pools.items():
+            _debug(
+                f"[dedupe_multi_position_players] {pos}: "
+                f"rostered={len(pool.rostered_players)}/{pool.roster_slots} "
+                f"replacement={len(pool.replacement_players)} "
+                f"below={len(pool.below_replacement)}"
+            )
 
     return pools, changes
+
+
+def _refill_tiers_after_dedupe(
+    pools: dict[str, PositionPool],
+    target_replacement_sizes: dict[str, int],
+    budget_config: dict[str, Any] | None,
+) -> dict[str, PositionPool]:
+    """Slide players up to fill rostered tier, then rebuild replacement tier."""
+    for pos, pool in pools.items():
+        all_players = (
+            pool.rostered_players + pool.replacement_players + pool.below_replacement
+        )
+        if not all_players:
+            continue
+
+        def _get_total_z_for_player(player: Player) -> float:
+            valuation = player.valuation.valuations_by_position.get(pos)
+            if valuation is None:
+                return 0.0
+            return valuation.total_z
+
+        all_players_sorted = sorted(
+            all_players, key=_get_total_z_for_player, reverse=True
+        )
+
+        desired_replacement_size = target_replacement_sizes.get(
+            pos, len(pool.replacement_players)
+        )
+
+        pre_rostered = len(pool.rostered_players)
+        pre_replacement = len(pool.replacement_players)
+
+        pool.rostered_players = all_players_sorted[: pool.roster_slots]
+        remaining = all_players_sorted[pool.roster_slots :]
+
+        if budget_config is not None:
+            replacement = rebuild_replacement_tier_on_z(
+                all_players_sorted, pool, budget_config, use_per_pool_z=True
+            )
+            if len(replacement) < desired_replacement_size:
+                seen_ids = {p.id for p in replacement}
+                for player in remaining:
+                    if player.id in seen_ids:
+                        continue
+                    replacement.append(player)
+                    seen_ids.add(player.id)
+                    if len(replacement) >= desired_replacement_size:
+                        break
+            pool.replacement_players = replacement
+        else:
+            pool.replacement_players = remaining[:desired_replacement_size]
+
+        replacement_ids = {p.id for p in pool.replacement_players}
+        pool.below_replacement = [p for p in remaining if p.id not in replacement_ids]
+
+        post_rostered = len(pool.rostered_players)
+        post_replacement = len(pool.replacement_players)
+
+        if _debug_enabled() and (
+            pre_rostered != post_rostered or pre_replacement != post_replacement
+        ):
+            _debug(
+                f"[refill_tiers_after_dedupe] {pos}: "
+                f"rostered {pre_rostered}->{post_rostered} "
+                f"replacement {pre_replacement}->{post_replacement}"
+            )
+
+    return pools
+
+
+def _debug_enabled() -> bool:
+    return os.getenv("MTBL_DEBUG_POOLS") == "1"
+
+
+def _debug(message: str) -> None:
+    if _debug_enabled():
+        print(message)

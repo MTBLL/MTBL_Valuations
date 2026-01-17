@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mtbl_valuations.domain.models import PositionPool
+from mtbl_valuations.domain.models import PositionPool, PositionValuation
 from mtbl_valuations.engine.budget import (
     allocate_pool_budget,
     allocate_position_budgets,
@@ -116,7 +116,9 @@ def run_trp_valuation(
 
     # Dedupe: assign multi-position players to their best-ranked position
     print("  Deduplicating multi-position players...")
-    hitter_pools, dedupe_changes = dedupe_multi_position_players(hitter_pools)
+    hitter_pools, dedupe_changes = dedupe_multi_position_players(
+        hitter_pools, budget_config
+    )
     print(f"    Reassigned {dedupe_changes} players to primary positions")
 
     # Re-iterate after dedupe since pool composition changed
@@ -204,30 +206,31 @@ def run_trp_valuation(
     # Phase 7: Allocate pitcher budgets
     # ========================================================================
     print("\nPhase 7: Allocating pitcher budgets...")
-    sp_pool = {
-        "SP": allocate_pool_budget(
-            sp_pool["SP"],
-            league_budget.sp_budget,
-            budget_config["sp_category_weights"],
-        )
-    }
-    rp_pool = {
-        "RP": allocate_pool_budget(
-            rp_pool["RP"],
-            league_budget.rp_budget,
-            budget_config["rp_category_weights"],
-        )
-    }
-    sp_pool = calc_pool_dollars_per_z(sp_pool)
-    rp_pool = calc_pool_dollars_per_z(rp_pool)
+    sp_pool.update(
+        {
+            "SP": allocate_pool_budget(
+                sp_pool["SP"],
+                league_budget.sp_budget,
+                budget_config["sp_category_weights"],
+            )
+        }
+    )
+    rp_pool.update(
+        {
+            "RP": allocate_pool_budget(
+                rp_pool["RP"],
+                league_budget.rp_budget,
+                budget_config["rp_category_weights"],
+            )
+        }
+    )
+    sp_pool.update(calc_pool_dollars_per_z(sp_pool))
+    rp_pool.update(calc_pool_dollars_per_z(rp_pool))
 
     # ========================================================================
     # Phase 9: Value pitcher players (no multi-eligibility)
     # ========================================================================
     print("\nPhase 9: Calculating pitcher dollar values...")
-
-    from ..domain.models import PositionValuation
-
     pitchers = sp_pool | rp_pool
 
     for _, pool in pitchers.items():

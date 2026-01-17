@@ -4,7 +4,7 @@ from mtbl_valuations.domain import PositionPool
 from mtbl_valuations.engine.pools import build_position_pools
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def regular_hitter_pools(
     players_from_hitters, league_settings, budget_config
 ) -> dict[str, PositionPool]:

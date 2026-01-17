@@ -106,7 +106,6 @@ class PositionPool(MTBLBaseModel):
     rostered_players: list[Player] = Field(default_factory=list)
     replacement_players: list[Player] = Field(default_factory=list)
     below_replacement: list[Player] = Field(default_factory=list)
-    rostered_tier_means: dict[str, float] = Field(default_factory=dict)
     rostered_tier_stdevs: dict[str, float] = Field(default_factory=dict)
     rlp_archetype: dict[str, float] = Field(default_factory=dict)
     rlp_raw_avg: dict[str, float] = Field(default_factory=dict)
