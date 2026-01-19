@@ -29,14 +29,22 @@ from mtbl_valuations.io.loader import (
 from tests.cache_fixtures import (
     converged_hitter_pools,
     converged_hitter_pools_deduped,
+    hitter_pools_deduped_converged,
+    hitter_pools_with_budgets_phase5,
+    hitter_pools_with_util_pool_converged_phase4b,
     use_test_cache,
+    util_pool_phase4a,
 )
 
 # Make cached fixtures available
 __all__ = [
     "converged_hitter_pools",
     "converged_hitter_pools_deduped",
+    "hitter_pools_deduped_converged",
+    "hitter_pools_with_budgets_phase5",
+    "hitter_pools_with_util_pool_converged_phase4b",
     "use_test_cache",
+    "util_pool_phase4a",
 ]
 
 

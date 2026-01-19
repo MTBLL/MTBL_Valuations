@@ -114,6 +114,9 @@ class PositionPool(MTBLBaseModel):
     dollars_per_z: dict[str, float] = Field(default_factory=dict)
     total_pool_z: dict[str, float] = Field(default_factory=dict)
     production_share: dict[str, float] = Field(default_factory=dict)
+    z_baseline_shift: dict[str, float] = Field(
+        default_factory=dict
+    )  # Baseline shift per category for negative Z handling
 
 
 class LeagueBudget(MTBLBaseModel):

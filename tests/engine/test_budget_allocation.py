@@ -17,7 +17,6 @@ class TestBudgetCalculation:
             league_summary = json.load(f)
 
         num_teams = league_summary["num_teams"]
-        # Budget is (260 - 5) * 11 teams = 259 * 11 = 2849
         expected_total = num_teams * 255
 
         assert league_budget.total == expected_total, (
@@ -126,6 +125,68 @@ class TestPositionPoolBudgets:
             f"should match {label} budget (${expected_budget:.2f}), "
             f"difference: ${difference:.2f}"
         )
+
+
+class TestCategoryBudgetAllocation:
+    """Test position-category budget allocation matches production share."""
+
+    def test_position_category_budgets_match_production_share(
+        self, hitter_pools_with_util_pool_converged_phase4b, league_budget
+    ):
+        """
+        Test that each position-category budget equals production share × total category budget.
+
+        For counting stats (R, HR, RBI, SBN): share based on actual production
+        For rate stats (OBP, SLG): share based on weighted PA
+        """
+        from mtbl_valuations.engine.budget import allocate_position_budgets
+
+        # Allocate budgets to pools
+        pools_with_budgets = allocate_position_budgets(
+            hitter_pools_with_util_pool_converged_phase4b,
+            league_budget,
+            {
+                "pa_weights": {"C": 500, "default": 600},
+            },
+        )
+
+        # Get total category budgets for hitters
+        hitter_category_budgets = league_budget.category_budgets["hitter"]
+
+        # Track position-category contributions for verification
+        position_cat_contributions: dict[str, dict[str, float]] = {}
+
+        # Sum up all position-category budgets for each category
+        for position, pool in pools_with_budgets.items():
+            position_cat_contributions[position] = {}
+
+            for category, budget in pool.category_budgets.items():
+                position_cat_contributions[position][category] = budget
+
+                # Verify budget matches: production_share × total_category_budget
+                expected_budget = (
+                    pool.production_share[category] * hitter_category_budgets[category]
+                )
+
+                assert abs(budget - expected_budget) < 0.01, (
+                    f"{position} {category}: budget ${budget:.2f} should equal "
+                    f"production_share ({pool.production_share[category]:.4f}) × "
+                    f"total_budget (${hitter_category_budgets[category]:.2f}) = "
+                    f"${expected_budget:.2f}"
+                )
+
+        # Verify that all position budgets for each category sum to the total category budget
+        for category in hitter_category_budgets.keys():
+            total_allocated = sum(
+                position_cat_contributions[pos].get(category, 0.0)
+                for pos in position_cat_contributions
+            )
+            expected_total = hitter_category_budgets[category]
+
+            assert abs(total_allocated - expected_total) < 0.01, (
+                f"{category}: sum of position budgets (${total_allocated:.2f}) "
+                f"should equal total category budget (${expected_total:.2f})"
+            )
 
 
 class TestDollarsPerZ:

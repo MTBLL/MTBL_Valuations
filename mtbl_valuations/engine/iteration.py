@@ -115,7 +115,8 @@ def iterate_to_convergence(
             pool.replacement_players = rebuild_replacement_tier_on_z(
                 all_pool_players,
                 pool,
-                budget_config,
+                budget_config["replacement_tier_pct"],
+                budget_config["min_replacement_tier_size"],
                 use_per_pool_z=track_z_per_pool,
             )
 

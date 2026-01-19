@@ -109,7 +109,6 @@ class TestBuildPositionPools:
         players = [multi_pos_player, ss_only, second_only, third_only]
 
         roster_slots = {"SS": 1, "2B": 1, "3B": 1}
-        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
 
         # Build pools with multi-eligibility
         pools = build_position_pools(
@@ -117,7 +116,8 @@ class TestBuildPositionPools:
             roster_slots,
             num_teams=1,
             role="HITTER",
-            budget_config=budget_config,
+            rlp_tier_pct=0.03,
+            min_rlp_tier_size=3,
             use_eligibility=True,
         )
 
@@ -170,7 +170,6 @@ class TestBuildPositionPools:
 
         players = [ss_player, second_player]
         roster_slots = {"SS": 1, "2B": 1}
-        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
 
         # Build pools with primary_position mode (post-assignment)
         pools = build_position_pools(
@@ -178,7 +177,8 @@ class TestBuildPositionPools:
             roster_slots,
             num_teams=1,
             role="HITTER",
-            budget_config=budget_config,
+            rlp_tier_pct=0.03,
+            min_rlp_tier_size=3,
             use_eligibility=False,
         )
 
@@ -263,7 +263,6 @@ class TestBuildUtilPool:
         hitter_pools = {"SS": ss_pool, "2B": second_pool}
         pure_dh_players = [dh_star, dh_avg, dh_weak]
         roster_slots = {"SS": 2, "2B": 1, "UTIL": 2}
-        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
 
         # Build UTIL pool
         util_pool = build_util_pool(
@@ -271,7 +270,8 @@ class TestBuildUtilPool:
             pure_dh_players,
             roster_slots,
             num_teams=1,
-            budget_config=budget_config,
+            rlp_tier_pct=0.03,
+            min_rlp_tier_size=3,
         )
 
         # Verify UTIL pool structure
@@ -332,14 +332,14 @@ class TestBuildUtilPool:
         hitter_pools = {"SS": ss_pool, "2B": second_pool}
         pure_dh_players = [p_high]
         roster_slots = {"UTIL": 2}
-        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
 
         util_pool = build_util_pool(
             hitter_pools,
             pure_dh_players,
             roster_slots,
             num_teams=1,
-            budget_config=budget_config,
+            rlp_tier_pct=0.03,
+            min_rlp_tier_size=3,
         )
 
         # Top 2 by wrc_plus should be rostered
@@ -373,14 +373,14 @@ class TestBuildUtilPool:
 
         hitter_pools = {"SS": ss_pool, "2B": second_pool}
         roster_slots = {"UTIL": 2}
-        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
 
         util_pool = build_util_pool(
             hitter_pools,
             pure_dh_players=[],
             roster_slots=roster_slots,
             num_teams=1,
-            budget_config=budget_config,
+            rlp_tier_pct=0.03,
+            min_rlp_tier_size=3,
         )
 
         # Player should only appear once
@@ -566,7 +566,7 @@ class TestDedupeMultiPositionPlayers:
 
         pools = {"SS": ss_pool, "OF": of_pool}
 
-        result_pools, changes = dedupe_multi_position_players(pools)
+        result_pools, changes = dedupe_multi_position_players(pools, 0.03, 3)
 
         # Should assign to SS (better rank) despite OF having higher Z
         assert player.valuation.primary_position == "SS"
@@ -597,7 +597,7 @@ class TestDedupeMultiPositionPlayers:
 
         pools = {"SS": ss_pool}
 
-        result_pools, changes = dedupe_multi_position_players(pools)
+        result_pools, changes = dedupe_multi_position_players(pools, 0.03, 3)
 
         assert player.valuation.primary_position == "SS"
         # First assignment counts as a change (from "" to "SS")
@@ -655,7 +655,7 @@ class TestDedupeMultiPositionPlayers:
 
         pools = {"SS": ss_pool, "2B": second_pool}
 
-        result_pools, changes = dedupe_multi_position_players(pools)
+        result_pools, changes = dedupe_multi_position_players(pools, 0.03, 3)
 
         assert player_a.valuation.primary_position == "SS"
         assert player_b.valuation.primary_position == "2B"
@@ -689,9 +689,8 @@ class TestRebuildReplacementTier:
         )
 
         all_players = [p1, p2, p3, p4, p5, p6]  # already sorted desc
-        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
 
-        result = rebuild_replacement_tier_on_z(all_players, pool, budget_config)
+        result = rebuild_replacement_tier_on_z(all_players, pool, 0.03, 3)
 
         assert len(result) == 2
         assert result[0].id == "p3"
@@ -713,9 +712,8 @@ class TestRebuildReplacementTier:
         )
 
         all_players = [p1, p2, p3, p4, p5]
-        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 3}
 
-        result = rebuild_replacement_tier_on_z(all_players, pool, budget_config)
+        result = rebuild_replacement_tier_on_z(all_players, pool, 0.03, 3)
 
         # None qualify by threshold, but min_size=3 forces inclusion
         assert len(result) == 3
@@ -730,9 +728,7 @@ class TestRebuildReplacementTier:
             rostered_players=[],
         )
 
-        result = rebuild_replacement_tier_on_z(
-            [], pool, {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 3}
-        )
+        result = rebuild_replacement_tier_on_z([], pool, 0.03, 3)
 
         assert result == []
 
@@ -773,10 +769,9 @@ class TestRebuildReplacementTier:
         )
 
         all_players = [p1, p2, p3]
-        budget_config = {"replacement_tier_pct": 0.03, "min_replacement_tier_size": 1}
 
         result = rebuild_replacement_tier_on_z(
-            all_players, pool, budget_config, use_per_pool_z=True
+            all_players, pool, 0.03, 3, use_per_pool_z=True
         )
 
         # 7.8 >= 8.0 * 0.97 = 7.76, so p3 qualifies

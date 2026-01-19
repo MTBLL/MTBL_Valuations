@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from ..domain.models import Player, PositionPool, Role
 from .valuation import get_composite_metric
@@ -42,7 +41,8 @@ def build_position_pools(
     roster_slots: dict[str, int],
     num_teams: int,
     role: Role,
-    budget_config: dict[str, Any],
+    rlp_tier_pct: float,
+    min_rlp_tier_size: int,
     use_eligibility: bool = False,
 ) -> dict[str, PositionPool]:
     """Build initial position pools with rostered and replacement tiers.
@@ -106,7 +106,9 @@ def build_position_pools(
 
         # Replacement tier: within X% of last rostered player
         if pool.rostered_players:
-            pool = _build_replacement_tier(pool, position_players, budget_config)
+            pool = _build_replacement_tier(
+                pool, position_players, rlp_tier_pct, min_rlp_tier_size
+            )
             _debug(
                 f"[build_position_pools] {position}: rostered={len(pool.rostered_players)} "
                 f"replacement={len(pool.replacement_players)} below={len(pool.below_replacement)}"
@@ -124,7 +126,8 @@ def build_pitcher_pool(
     roster_slots: dict[str, int],
     num_teams: int,
     role: Role,
-    budget_config: dict[str, Any],
+    rlp_tier_pct: float,
+    min_rlp_tier_size: int,
 ) -> PositionPool:
     """Build a single pool for SP or RP."""
     position = "SP" if role == "SP" else "RP"
@@ -145,7 +148,9 @@ def build_pitcher_pool(
 
     # Replacement tier
     if pool.rostered_players:
-        pool = _build_replacement_tier(pool, sorted_players, budget_config)
+        pool = _build_replacement_tier(
+            pool, sorted_players, rlp_tier_pct, min_rlp_tier_size
+        )
 
     return pool
 
@@ -155,7 +160,8 @@ def build_util_pool(
     pure_dh_players: list[Player],
     roster_slots: dict[str, int],
     num_teams: int,
-    budget_config: dict[str, Any],
+    rlp_tier_pct: float,
+    min_rlp_tier_size: int,
 ) -> PositionPool:
     """
     Build UTIL pool from replacement-tier players across all positions.
@@ -191,20 +197,21 @@ def build_util_pool(
     # Replacement tier
     if util_pool.rostered_players:
         util_pool = _build_replacement_tier(
-            util_pool, util_candidates_sorted, budget_config
+            util_pool, util_candidates_sorted, rlp_tier_pct, min_rlp_tier_size
         )
 
     return util_pool
 
 
 def _build_replacement_tier(
-    pool: PositionPool, position_players: list[Player], budget_config: dict[str, Any]
+    pool: PositionPool,
+    position_players: list[Player],
+    rlp_tier_pct: float,
+    min_rlp_tier_size: int,
 ) -> PositionPool:
     pool = pool
     last_rostered_metric = get_composite_metric(pool.rostered_players[-1])
-    threshold = _calc_replacement_threshold(
-        last_rostered_metric, budget_config["replacement_tier_pct"]
-    )
+    threshold = _calc_replacement_threshold(last_rostered_metric, rlp_tier_pct)
 
     replacement_candidates = [
         p
@@ -220,13 +227,12 @@ def _build_replacement_tier(
         )
 
     # Enforce minimum tier size
-    min_size = budget_config["min_replacement_tier_size"]
-    if len(replacement_candidates) < min_size:
+    if len(replacement_candidates) < min_rlp_tier_size:
         replacement_candidates = position_players[
-            pool.roster_slots : pool.roster_slots + min_size
+            pool.roster_slots : pool.roster_slots + min_rlp_tier_size
         ]
         _debug(
-            f"[build_replacement_tier] {pool.position}: enforcing min_size={min_size} "
+            f"[build_replacement_tier] {pool.position}: enforcing min_size={min_rlp_tier_size} "
             f"replacement={len(replacement_candidates)} remaining={remaining}"
         )
 
@@ -241,7 +247,8 @@ def _build_replacement_tier(
 def rebuild_replacement_tier_on_z(
     all_pool_players: list[Player],
     pool: PositionPool,
-    budget_config: dict[str, Any],
+    rlp_tier_pct: float,
+    min_rlp_tier_size: int,
     use_per_pool_z: bool = False,
 ) -> list[Player]:
     """Rebuild replacement tier after re-ranking by total Z.
@@ -249,7 +256,8 @@ def rebuild_replacement_tier_on_z(
     Args:
         all_pool_players: All players in this pool, sorted by total_z descending.
         pool: The position pool being rebuilt.
-        budget_config: Configuration with replacement_tier_pct and min_replacement_tier_size.
+        rlp_tier_pct: Percentage of players to include in replacement tier.
+        min_rlp_tier_size: Minimum number of players to include in replacement tier.
         use_per_pool_z: If True, get total_z from player's valuations_by_position dict
             for this pool's position. Use when players appear in multiple pools.
     """
@@ -270,16 +278,18 @@ def rebuild_replacement_tier_on_z(
         # TODO: perhaps we need create arg for threshold size, or store it in the pool object.
         # a 3% distance from a total z-score typically betwen 0-3 units will never produce a meaningful range
         # it makes sense to have the same RLP size for each iteration. current logic will always enforce the min size
-        threshold = last_rostered_z * (1 - budget_config["replacement_tier_pct"])
+        threshold = last_rostered_z * (1 - rlp_tier_pct)
 
         replacement_candidates = [
             p for p in remaining if _get_total_z_for_player(p) >= threshold
         ]
 
         # Enforce minimum tier size
-        min_size = budget_config["min_replacement_tier_size"]
-        if len(replacement_candidates) < min_size and len(remaining) >= min_size:
-            replacement_candidates = remaining[:min_size]
+        if (
+            len(replacement_candidates) < min_rlp_tier_size
+            and len(remaining) >= min_rlp_tier_size
+        ):
+            replacement_candidates = remaining[:min_rlp_tier_size]
 
         return replacement_candidates
 
@@ -391,8 +401,7 @@ def rebuild_pools_after_assignment(
 
 
 def dedupe_multi_position_players(
-    pools: dict[str, PositionPool],
-    budget_config: dict[str, Any] | None = None,
+    pools: dict[str, PositionPool], rlp_tier_pct: float, min_rlp_tier_size: int
 ) -> tuple[dict[str, PositionPool], int]:
     """
     Assign multi-position players to their highest-ranked position and remove from others.
@@ -451,7 +460,7 @@ def dedupe_multi_position_players(
     # Now remove players from pools where they're not assigned
     pools = rebuild_pools_after_assignment(pools)
     pools = _refill_tiers_after_dedupe(
-        pools, target_replacement_sizes, budget_config
+        pools, target_replacement_sizes, rlp_tier_pct, min_rlp_tier_size
     )
 
     if _debug_enabled():
@@ -469,7 +478,8 @@ def dedupe_multi_position_players(
 def _refill_tiers_after_dedupe(
     pools: dict[str, PositionPool],
     target_replacement_sizes: dict[str, int],
-    budget_config: dict[str, Any] | None,
+    rlp_tier_pct: float,
+    min_rlp_tier_size: int,
 ) -> dict[str, PositionPool]:
     """Slide players up to fill rostered tier, then rebuild replacement tier."""
     for pos, pool in pools.items():
@@ -499,22 +509,23 @@ def _refill_tiers_after_dedupe(
         pool.rostered_players = all_players_sorted[: pool.roster_slots]
         remaining = all_players_sorted[pool.roster_slots :]
 
-        if budget_config is not None:
-            replacement = rebuild_replacement_tier_on_z(
-                all_players_sorted, pool, budget_config, use_per_pool_z=True
-            )
-            if len(replacement) < desired_replacement_size:
-                seen_ids = {p.id for p in replacement}
-                for player in remaining:
-                    if player.id in seen_ids:
-                        continue
-                    replacement.append(player)
-                    seen_ids.add(player.id)
-                    if len(replacement) >= desired_replacement_size:
-                        break
-            pool.replacement_players = replacement
-        else:
-            pool.replacement_players = remaining[:desired_replacement_size]
+        replacement = rebuild_replacement_tier_on_z(
+            all_players_sorted,
+            pool,
+            rlp_tier_pct,
+            min_rlp_tier_size,
+            use_per_pool_z=True,
+        )
+        if len(replacement) < desired_replacement_size:
+            seen_ids = {p.id for p in replacement}
+            for player in remaining:
+                if player.id in seen_ids:
+                    continue
+                replacement.append(player)
+                seen_ids.add(player.id)
+                if len(replacement) >= desired_replacement_size:
+                    break
+        pool.replacement_players = replacement
 
         replacement_ids = {p.id for p in pool.replacement_players}
         pool.below_replacement = [p for p in remaining if p.id not in replacement_ids]

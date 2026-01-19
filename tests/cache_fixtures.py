@@ -9,8 +9,16 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from mtbl_valuations.engine.budget import (
+    allocate_position_budgets,
+    calc_pool_dollars_per_z,
+)
 from mtbl_valuations.engine.iteration import iterate_to_convergence
-from mtbl_valuations.engine.pools import dedupe_multi_position_players
+from mtbl_valuations.engine.pools import (
+    build_util_pool,
+    dedupe_multi_position_players,
+)
+from mtbl_valuations.engine.valuation import distribute_player_dollars
 
 if TYPE_CHECKING:
     from mtbl_valuations.domain.models import PositionPool
@@ -62,7 +70,7 @@ def converged_hitter_pools(
     use_test_cache: bool,
 ) -> dict[str, PositionPool]:
     """
-    Phase 3: Cached converged hitter pools (pre-dedupe).
+    Phase 3b: Cached converged hitter pools (pre-dedupe).
 
     Expensive operation: iterate_to_convergence() with up to 10 iterations.
     Cache key includes batters, league settings, and budget config.
@@ -126,14 +134,13 @@ def converged_hitter_pools(
 def converged_hitter_pools_deduped(
     converged_hitter_pools: dict[str, PositionPool],
     budget_config: dict[str, Any],
-    league_settings: dict[str, Any],
     batters_file: Path,
     league_file: Path,
     budget_config_file: Path,
     use_test_cache: bool,
-) -> dict[str, PositionPool]:
+) -> tuple[dict[str, PositionPool], int]:
     """
-    Phase 3b: Cached post-dedupe hitter pools.
+    Phase 3c: Cached post-dedupe hitter pools.
 
     Expensive operation: dedupe_multi_position_players() + re-iteration.
     Cache key includes batters, league settings, and budget config.
@@ -141,7 +148,6 @@ def converged_hitter_pools_deduped(
     Args:
         converged_hitter_pools: Converged pools from phase 3
         budget_config: Budget configuration
-        league_settings: League settings
         batters_file: Path to batters fixture file (for cache key)
         league_file: Path to league fixture file (for cache key)
         budget_config_file: Path to budget config file (for cache key)
@@ -151,12 +157,10 @@ def converged_hitter_pools_deduped(
         Final single-position hitter pools after deduplication
     """
     if not use_test_cache:
-        deduped, _ = dedupe_multi_position_players(converged_hitter_pools)
-        return iterate_to_convergence(
-            deduped,
-            budget_config,
-            league_settings,
-            track_z_per_pool=True,
+        return dedupe_multi_position_players(
+            converged_hitter_pools,
+            budget_config["replacement_tier_pct"],
+            budget_config["min_replacement_tier_size"],
         )
 
     # Generate cache key from input files
@@ -167,7 +171,7 @@ def converged_hitter_pools_deduped(
         "phase3b_deduped_hitters",
     )
 
-    cache_file = CACHE_DIR / f"phase3b_{key}.pkl"
+    cache_file = CACHE_DIR / f"phase3c_{key}.pkl"
 
     # Try to load from cache
     if cache_file.exists():
@@ -179,12 +183,136 @@ def converged_hitter_pools_deduped(
             pass
 
     # Not cached or corrupted - run expensive operation
-    deduped, _ = dedupe_multi_position_players(converged_hitter_pools)
-    result = iterate_to_convergence(
-        deduped,
-        budget_config,
-        league_settings,
-        track_z_per_pool=True,
+    deduped, num_dedupes = dedupe_multi_position_players(
+        converged_hitter_pools,
+        budget_config["replacement_tier_pct"],
+        budget_config["min_replacement_tier_size"],
+    )
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    result = (deduped, num_dedupes)
+    with open(cache_file, "wb") as f:
+        pickle.dump(result, f)
+
+    return result
+
+
+@pytest.fixture(scope="session")
+def hitter_pools_deduped_converged(
+    converged_hitter_pools_deduped,
+    budget_config,
+    league_settings,
+    batters_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    deduped, _ = converged_hitter_pools_deduped
+    if not use_test_cache:
+        return iterate_to_convergence(deduped, budget_config, league_settings)
+
+    # Generate cache key from input files
+    key = _cache_key(
+        batters_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase3c_deduped_hitters",
+    )
+
+    cache_file = CACHE_DIR / f"phase3d_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run expensive operation
+    result = iterate_to_convergence(deduped, budget_config, league_settings)
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(result, f)
+
+    return result
+
+
+@pytest.fixture(scope="session")
+def util_pool_phase4a(
+    hitter_pools_deduped_converged: dict[str, PositionPool],
+    dh_and_regular_hitters,
+    budget_config: dict[str, Any],
+    league_settings: dict[str, Any],
+    batters_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> PositionPool:
+    """
+    Phase 4a: Cached UTIL pool built from replacement-tier players + pure DHs.
+
+    Expensive operation: build_util_pool() which collects and sorts players.
+    Cache key includes batters, league settings, and budget config.
+
+    Args:
+        hitter_pools_deduped_converged: Converged pools after deduplication
+        dh_and_regular_hitters: Tuple of (pure_dh_players, regular_hitters)
+        budget_config: Budget configuration
+        league_settings: League settings
+        batters_file: Path to batters fixture file (for cache key)
+        league_file: Path to league fixture file (for cache key)
+        budget_config_file: Path to budget config file (for cache key)
+        use_test_cache: Whether to use caching
+
+    Returns:
+        UTIL position pool
+    """
+    pure_dh_players, _ = dh_and_regular_hitters
+    rlp_tier_pct = budget_config["replacement_tier_pct"]
+    min_rlp_tier_size = budget_config["min_replacement_tier_size"]
+
+    if not use_test_cache:
+        return build_util_pool(
+            hitter_pools_deduped_converged,
+            pure_dh_players,
+            league_settings["roster_slots"],
+            league_settings["num_teams"],
+            rlp_tier_pct,
+            min_rlp_tier_size,
+        )
+
+    # Generate cache key from input files
+    key = _cache_key(
+        batters_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase4a_util_pool",
+    )
+
+    cache_file = CACHE_DIR / f"phase4a_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run expensive operation
+    result = build_util_pool(
+        hitter_pools_deduped_converged,
+        pure_dh_players,
+        league_settings["roster_slots"],
+        league_settings["num_teams"],
+        rlp_tier_pct,
+        min_rlp_tier_size,
     )
 
     # Save to cache
@@ -193,3 +321,170 @@ def converged_hitter_pools_deduped(
         pickle.dump(result, f)
 
     return result
+
+
+@pytest.fixture(scope="session")
+def hitter_pools_with_util_pool_converged_phase4b(
+    hitter_pools_deduped_converged: dict[str, PositionPool],
+    util_pool_phase4a: PositionPool,
+    budget_config: dict[str, Any],
+    league_settings: dict[str, Any],
+    batters_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    """
+    Phase 4b: Cached converged UTIL pool with composite RLP baseline.
+
+    Expensive operation: iterate_to_convergence() on UTIL pool.
+    Cache key includes batters, league settings, and budget config.
+
+    Args:
+        util_pool_phase4a: UTIL pool from Phase 4a
+        budget_config: Budget configuration
+        league_settings: League settings
+        batters_file: Path to batters fixture file (for cache key)
+        league_file: Path to league fixture file (for cache key)
+        budget_config_file: Path to budget config file (for cache key)
+        use_test_cache: Whether to use caching
+
+    Returns:
+        Converged UTIL pool
+    """
+    hitter_pools = hitter_pools_deduped_converged
+    if not use_test_cache:
+        results = iterate_to_convergence(
+            {"UTIL": util_pool_phase4a},
+            budget_config,
+            league_settings,
+        )["UTIL"]
+        hitter_pools["UTIL"] = results
+        return hitter_pools
+
+    # Generate cache key from input files
+    key = _cache_key(
+        batters_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase4b_util_pool_converged",
+    )
+
+    cache_file = CACHE_DIR / f"phase4b_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run expensive operation
+    results = iterate_to_convergence(
+        {"UTIL": util_pool_phase4a},
+        budget_config,
+        league_settings,
+    )["UTIL"]
+    hitter_pools["UTIL"] = results
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(hitter_pools, f)
+
+    return hitter_pools
+
+
+@pytest.fixture(scope="session")
+def hitter_pools_with_budgets_phase5(
+    hitter_pools_with_util_pool_converged_phase4b: dict[str, PositionPool],
+    league_budget,
+    budget_config: dict[str, Any],
+    batters_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    """
+    Phase 5: Cached hitter pools with budget allocation and dollar distribution.
+
+    Expensive operations:
+    - allocate_position_budgets() - distributes category budgets to positions
+    - calc_pool_dollars_per_z() - calculates $/Z conversion rates
+    - distribute_player_dollars() - assigns dollar values to each player
+
+    Cache key includes batters, league settings, and budget config.
+
+    Args:
+        hitter_pools_with_util_pool_converged_phase4b: Complete hitter pools from Phase 4b
+        league_budget: League budget calculation
+        budget_config: Budget configuration
+        batters_file: Path to batters fixture file (for cache key)
+        league_file: Path to league fixture file (for cache key)
+        budget_config_file: Path to budget config file (for cache key)
+        use_test_cache: Whether to use caching
+
+    Returns:
+        Dictionary of all hitter pools with budgets and dollar values assigned
+    """
+    if not use_test_cache:
+        pools = allocate_position_budgets(
+            hitter_pools_with_util_pool_converged_phase4b,
+            league_budget,
+            budget_config,
+        )
+        pools = calc_pool_dollars_per_z(pools)
+
+        # Distribute dollars to all hitter players
+        for _, pool in pools.items():
+            for player in pool.rostered_players + pool.replacement_players:
+                dollar_values = distribute_player_dollars(player, pool)
+                total_dollars = sum(dollar_values.values())
+                player.valuation.dollar_values = dollar_values
+                player.valuation.total_dollars = total_dollars
+
+        return pools
+
+    # Generate cache key from input files
+    key = _cache_key(
+        batters_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase5_hitter_budgets",
+    )
+
+    cache_file = CACHE_DIR / f"phase5_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run expensive operation
+    pools = allocate_position_budgets(
+        hitter_pools_with_util_pool_converged_phase4b,
+        league_budget,
+        budget_config,
+    )
+    pools = calc_pool_dollars_per_z(pools)
+
+    # Distribute dollars to all hitter players
+    for _, pool in pools.items():
+        for player in pool.rostered_players + pool.replacement_players:
+            dollar_values = distribute_player_dollars(player, pool)
+            total_dollars = sum(dollar_values.values())
+            player.valuation.dollar_values = dollar_values
+            player.valuation.total_dollars = total_dollars
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(pools, f)
+
+    return pools

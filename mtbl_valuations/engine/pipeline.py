@@ -64,6 +64,11 @@ def run_trp_valuation(
     budget_config = load_budget_config(budget_config_file)
     league_budget = calc_league_budget(league_settings, budget_config)
 
+    ros_slots = league_settings["roster_slots"]
+    num_teams = league_settings["num_teams"]
+    rlp_tier_pct = budget_config["replacement_tier_pct"]
+    min_rlp_tier_size = budget_config["min_replacement_tier_size"]
+
     print(f"  Loaded {len(hitter_players)} hitters")
     print(f"  Loaded {len(pitcher_players)} pitchers")
     print(f"  League: {league_settings['num_teams']} teams")
@@ -96,16 +101,19 @@ def run_trp_valuation(
     # ========================================================================
     # Phase 3: Build position pools and iterate to convergence (multi-eligible)
     # ========================================================================
+    # Phase 3a
     print("\nPhase 3: Building hitter pools (multi-eligible)...")
     hitter_pools: dict[str, PositionPool] = build_position_pools(
         regular_hitters,
-        league_settings["roster_slots"],
-        league_settings["num_teams"],
+        ros_slots,
+        num_teams,
         "HITTER",
-        budget_config,
+        rlp_tier_pct,
+        min_rlp_tier_size,
         use_eligibility=True,  # Players appear in ALL eligible positions
     )
 
+    # Phase 3b
     print("  Iterating hitter pools to convergence (per-pool tracking)...")
     hitter_pools = iterate_to_convergence(
         hitter_pools,
@@ -114,13 +122,15 @@ def run_trp_valuation(
         track_z_per_pool=True,  # Store Z-scores per position
     )
 
+    # Phase 3c
     # Dedupe: assign multi-position players to their best-ranked position
     print("  Deduplicating multi-position players...")
     hitter_pools, dedupe_changes = dedupe_multi_position_players(
-        hitter_pools, budget_config
+        hitter_pools, rlp_tier_pct, min_rlp_tier_size
     )
     print(f"    Reassigned {dedupe_changes} players to primary positions")
 
+    # Phase 3d
     # Re-iterate after dedupe since pool composition changed
     if dedupe_changes > 0:
         print("  Re-iterating after dedupe...")
@@ -136,15 +146,18 @@ def run_trp_valuation(
     # ========================================================================
     print("\nPhase 4: Building UTIL pool from stabilized pools...")
 
+    # Phase 4a
     # Build UTIL pool from replacement-tier players + pure DHs
     util_pool: PositionPool = build_util_pool(
         hitter_pools,
         pure_dh_players,
         league_settings["roster_slots"],
         league_settings["num_teams"],
-        budget_config,
+        rlp_tier_pct,
+        min_rlp_tier_size,
     )
 
+    # Phase 4b
     # Iterate UTIL pool with composite RLP baseline
     print("  Iterating UTIL pool with composite RLP baseline...")
     util_pool = iterate_to_convergence(
@@ -165,7 +178,7 @@ def run_trp_valuation(
     hitter_pools = calc_pool_dollars_per_z(hitter_pools)
 
     # Distribute dollars to all hitter players
-    for pos, pool in hitter_pools.items():
+    for _, pool in hitter_pools.items():
         for player in pool.rostered_players + pool.replacement_players:
             dollar_values = distribute_player_dollars(player, pool)
             total_dollars = sum(dollar_values.values())
@@ -177,6 +190,7 @@ def run_trp_valuation(
     # ========================================================================
     # Phase 6: Build pitcher pools
     # ========================================================================
+    # Phase 6a
     print("\nPhase 6: Building pitcher pools...")
     sp_pool: dict[str, PositionPool] = {
         "SP": build_pitcher_pool(
@@ -184,21 +198,26 @@ def run_trp_valuation(
             league_settings["roster_slots"],
             league_settings["num_teams"],
             "SP",
-            budget_config,
+            rlp_tier_pct,
+            min_rlp_tier_size,
         )
     }
+    # Phase 6b
     print("  Iterating SP pool to convergence...")
     sp_pool = iterate_to_convergence(sp_pool, budget_config, league_settings)
 
+    # Phase 6c
     rp_pool: dict[str, PositionPool] = {
         "RP": build_pitcher_pool(
             relievers,
             league_settings["roster_slots"],
             league_settings["num_teams"],
             "RP",
-            budget_config,
+            rlp_tier_pct,
+            min_rlp_tier_size,
         )
     }
+    # Phase 6d
     print("  Iterating RP pool to convergence...")
     rp_pool = iterate_to_convergence(rp_pool, budget_config, league_settings)
 
