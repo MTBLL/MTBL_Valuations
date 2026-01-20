@@ -10,7 +10,8 @@
       "Bash(python -m pytest:*)",
       "Bash(ls:*)",
       "Bash(sort:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(pytest:*)"
     ]
   }
 }

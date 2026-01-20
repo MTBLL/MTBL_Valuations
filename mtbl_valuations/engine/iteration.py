@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import statistics
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import Any, Iterable
 
 from mtbl_valuations.domain.models import Player, PositionPool, PositionValuation
 from mtbl_valuations.engine.valuation import get_player_stat
 
-if TYPE_CHECKING:
-    pass
 from mtbl_valuations.engine.pools import rebuild_replacement_tier_on_z
 from mtbl_valuations.engine.valuation import (
     get_categories,

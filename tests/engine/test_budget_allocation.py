@@ -46,7 +46,6 @@ class TestBudgetCalculation:
         ), "Hitter + pitcher budgets should sum to total budget"
 
 
-@pytest.mark.skip("broken")
 class TestRosteredTierBudget:
     """Test that only rostered tier players consume budget."""
 

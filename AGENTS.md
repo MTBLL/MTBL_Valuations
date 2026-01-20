@@ -102,7 +102,7 @@ python -m pytest tests/engine/test_pools.py -v -s
 #### CI/CD Pipeline
 ```bash
 # Run all tests with coverage (typical CI setup)
-python -m pytest tests/ --cov=mtbl_valuations --cov-report=xml
+uv run pytest tests/ --cov=mtbl_valuations --cov-report=term-missing
 ```
 
 #### Performance Testing

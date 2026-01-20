@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, Union
+from typing import Literal, TypeAlias, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-if TYPE_CHECKING:
-    StatsType = Union["HitterStats", "PitcherStats"]
+StatsType: TypeAlias = Union["HitterStats", "PitcherStats"]
 
 Role = Literal["HITTER", "SP", "RP"]
 Tier = Literal["ROSTERED", "REPLACEMENT", "BELOW_REPLACEMENT"]

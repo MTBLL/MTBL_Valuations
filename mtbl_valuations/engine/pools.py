@@ -273,27 +273,24 @@ def rebuild_replacement_tier_on_z(
         return p.valuation.total_z
 
     # Use total_z instead of composite metric for threshold
-    if pool.rostered_players:
-        last_rostered_z = _get_total_z_for_player(pool.rostered_players[-1])
-        # TODO: perhaps we need create arg for threshold size, or store it in the pool object.
-        # a 3% distance from a total z-score typically betwen 0-3 units will never produce a meaningful range
-        # it makes sense to have the same RLP size for each iteration. current logic will always enforce the min size
-        threshold = last_rostered_z * (1 - rlp_tier_pct)
+    last_rostered_z = _get_total_z_for_player(pool.rostered_players[-1])
+    # TODO: perhaps we need create arg for threshold size, or store it in the pool object.
+    # a 3% distance from a total z-score typically betwen 0-3 units will never produce a meaningful range
+    # it makes sense to have the same RLP size for each iteration. current logic will always enforce the min size
+    threshold = last_rostered_z * (1 - rlp_tier_pct)
 
-        replacement_candidates = [
-            p for p in remaining if _get_total_z_for_player(p) >= threshold
-        ]
+    replacement_candidates = [
+        p for p in remaining if _get_total_z_for_player(p) >= threshold
+    ]
 
-        # Enforce minimum tier size
-        if (
-            len(replacement_candidates) < min_rlp_tier_size
-            and len(remaining) >= min_rlp_tier_size
-        ):
-            replacement_candidates = remaining[:min_rlp_tier_size]
+    # Enforce minimum tier size
+    if (
+        len(replacement_candidates) < min_rlp_tier_size
+        and len(remaining) >= min_rlp_tier_size
+    ):
+        replacement_candidates = remaining[:min_rlp_tier_size]
 
-        return replacement_candidates
-
-    return []
+    return replacement_candidates
 
 
 def assign_final_positions(

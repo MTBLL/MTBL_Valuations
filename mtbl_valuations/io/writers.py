@@ -71,10 +71,16 @@ def write_position_summary_csv(
 
         # Add $/Z per category
         for cat, rate in pool.dollars_per_z.items():
+            # Skip IP for RP pools (weight is 0.0, no dollar value)
+            if pool.position == "RP" and cat == "IP":
+                continue
             row[f"dollars_per_z_{cat}"] = round(rate, 3)
 
         # Add replacement baseline stats
         for cat, value in pool.rlp_raw_avg.items():
+            # Skip IP for RP pools (weight is 0.0, not used in valuation)
+            if pool.position == "RP" and cat == "IP":
+                continue
             row[f"replacement_baseline_{cat}"] = round(value, 3)
 
         rows.append(row)

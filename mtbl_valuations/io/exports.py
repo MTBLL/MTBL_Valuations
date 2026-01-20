@@ -54,7 +54,7 @@ def export_hitter_position_csv(
             "eligible_positions": "|".join(player.positions),
             "tier": valuation_tier,
             "total_z": round(valuation_total_z, 3),
-            "total_dollars": round(player.valuation.total_dollars * 1000, 3),
+            "total_dollars": round(player.valuation.total_dollars, 2),
         }
 
         # Stats for each category: raw stat, z-score, dollars
@@ -148,6 +148,11 @@ def export_pitcher_pool_csv(
 
             player = cast(Player, player)
             row[f"{cat}_raw"] = round(raw_val, 3)
+
+            # Skip IP z-score and dollars for RP pools (IP weight is 0.0)
+            if pool.position == "RP" and cat == "IP":
+                continue
+
             row[f"{cat}_z"] = round(player.valuation.normalized_z.get(cat, 0.0), 3)
             row[f"{cat}_dollars"] = round(
                 player.valuation.dollar_values.get(cat, 0.0), 2
