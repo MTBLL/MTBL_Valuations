@@ -9,7 +9,10 @@ from mtbl_valuations.domain.models import (
     Player,
     PositionPool,
 )
-from mtbl_valuations.io.exports import export_hitter_position_csv, export_pitcher_pool_csv
+from mtbl_valuations.io.exports import (
+    export_hitter_position_csv,
+    export_pitcher_pool_csv,
+)
 from mtbl_valuations.io.writers import write_player_json
 from mtbl_valuations.validation.checks import (
     validate_budget_balance,
@@ -109,7 +112,7 @@ def test_write_player_json_adds_stats(tmp_path):
     write_player_json(output_path, input_data, {"SS": pool})
 
     data = json.loads(output_path.read_text())
-    assert data[0]["stats"]["valuations"]["total_z"] == 1.234
+    assert data[0]["valuations"]["total_z"] == 1.234
 
 
 def test_validation_failures(capsys):

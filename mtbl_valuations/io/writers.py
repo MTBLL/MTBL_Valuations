@@ -128,9 +128,7 @@ def write_player_json(
     for record in input_data:
         player_id = str(record["id_espn"])
         if player_id in player_valuations:
-            if "stats" not in record:
-                record["stats"] = {}
-            record["stats"]["valuations"] = player_valuations[player_id]
+            record["valuations"] = player_valuations[player_id]
         enriched.append(record)
 
     # Write to JSON

@@ -10,7 +10,6 @@ import pandas as pd
 from mtbl_valuations.domain.models import (
     HitterPlayer,
     PitcherPlayer,
-    Player,
     PositionPool,
 )
 
