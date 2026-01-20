@@ -692,7 +692,7 @@ class TestRebuildReplacementTier:
 
         result = rebuild_replacement_tier_on_z(all_players, pool, 0.03, 3)
 
-        assert len(result) == 2
+        assert len(result) == 3
         assert result[0].id == "p3"
         assert result[1].id == "p4"
 

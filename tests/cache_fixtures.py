@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from mtbl_valuations.engine.budget import (
+    allocate_pool_budget,
     allocate_position_budgets,
     calc_pool_dollars_per_z,
 )
@@ -738,3 +739,228 @@ def converged_rp_pool(
         pickle.dump(result, f)
 
     return result
+
+
+@pytest.fixture(scope="session")
+def sp_pool_with_budget_phase7(
+    converged_sp_pool,
+    league_budget,
+    budget_config: dict[str, Any],
+    pitchers_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    """
+    Phase 7a: Cached SP pool with allocated budgets and $/Z rates.
+
+    Applies budget allocation and calculates dollars per Z for SP pool.
+    Cache key includes pitchers, league settings, and budget config.
+
+    Args:
+        converged_sp_pool: Converged SP pool from phase 6b
+        league_budget: League budget object containing SP budget allocation
+        budget_config: Budget configuration with SP category weights
+        pitchers_file: Path to pitchers fixture file (for cache key)
+        league_file: Path to league fixture file (for cache key)
+        budget_config_file: Path to budget config file (for cache key)
+        use_test_cache: Whether to use caching
+
+    Returns:
+        Dictionary with single key "SP" containing the SP PositionPool with budgets
+    """
+    if not use_test_cache:
+        sp_pool = {
+            "SP": allocate_pool_budget(
+                converged_sp_pool["SP"],
+                league_budget.sp_budget,
+                budget_config["sp_category_weights"],
+            )
+        }
+        return calc_pool_dollars_per_z(sp_pool)
+
+    # Generate cache key from input files
+    key = _cache_key(
+        pitchers_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase7a_sp_pool_with_budget",
+    )
+
+    cache_file = CACHE_DIR / f"phase7a_sp_budget_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run budget allocation
+    sp_pool = {
+        "SP": allocate_pool_budget(
+            converged_sp_pool["SP"],
+            league_budget.sp_budget,
+            budget_config["sp_category_weights"],
+        )
+    }
+    result = calc_pool_dollars_per_z(sp_pool)
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(result, f)
+
+    return result
+
+
+@pytest.fixture(scope="session")
+def rp_pool_with_budget_phase7(
+    converged_rp_pool,
+    league_budget,
+    budget_config: dict[str, Any],
+    pitchers_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    """
+    Phase 7b: Cached RP pool with allocated budgets and $/Z rates.
+
+    Applies budget allocation and calculates dollars per Z for RP pool.
+    Cache key includes pitchers, league settings, and budget config.
+
+    Args:
+        converged_rp_pool: Converged RP pool from phase 6d
+        league_budget: League budget object containing RP budget allocation
+        budget_config: Budget configuration with RP category weights
+        pitchers_file: Path to pitchers fixture file (for cache key)
+        league_file: Path to league fixture file (for cache key)
+        budget_config_file: Path to budget config file (for cache key)
+        use_test_cache: Whether to use caching
+
+    Returns:
+        Dictionary with single key "RP" containing the RP PositionPool with budgets
+    """
+    if not use_test_cache:
+        rp_pool = {
+            "RP": allocate_pool_budget(
+                converged_rp_pool["RP"],
+                league_budget.rp_budget,
+                budget_config["rp_category_weights"],
+            )
+        }
+        return calc_pool_dollars_per_z(rp_pool)
+
+    # Generate cache key from input files
+    key = _cache_key(
+        pitchers_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase7b_rp_pool_with_budget",
+    )
+
+    cache_file = CACHE_DIR / f"phase7b_rp_budget_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run budget allocation
+    rp_pool = {
+        "RP": allocate_pool_budget(
+            converged_rp_pool["RP"],
+            league_budget.rp_budget,
+            budget_config["rp_category_weights"],
+        )
+    }
+    result = calc_pool_dollars_per_z(rp_pool)
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(result, f)
+
+    return result
+
+
+@pytest.fixture(scope="session")
+def pitchers_with_dollars_phase8(
+    sp_pool_with_budget_phase7,
+    rp_pool_with_budget_phase7,
+    pitchers_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    """
+    Phase 8: Cached pitcher pools (SP and RP) with dollar values distributed.
+
+    Distributes dollar values to individual pitchers based on their Z-scores
+    and the pool's $/Z rates. Returns combined dictionary with both SP and RP.
+    Cache key includes pitchers, league settings, and budget config.
+
+    Args:
+        sp_pool_with_budget_phase7: SP pool with allocated budgets from phase 7a
+        rp_pool_with_budget_phase7: RP pool with allocated budgets from phase 7b
+        pitchers_file: Path to pitchers fixture file (for cache key)
+        league_file: Path to league fixture file (for cache key)
+        budget_config_file: Path to budget config file (for cache key)
+        use_test_cache: Whether to use caching
+
+    Returns:
+        Dictionary with keys "SP" and "RP" containing pools with dollar values
+    """
+    if not use_test_cache:
+        pitchers = sp_pool_with_budget_phase7 | rp_pool_with_budget_phase7
+        for _, pool in pitchers.items():
+            for player in pool.rostered_players + pool.replacement_players:
+                dollar_values = distribute_player_dollars(player, pool)
+                total_dollars = sum(dollar_values.values())
+                player.valuation.dollar_values = dollar_values
+                player.valuation.total_dollars = total_dollars
+                player.valuation.primary_position = pool.position
+        return pitchers
+
+    # Generate cache key from input files
+    key = _cache_key(
+        pitchers_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase8_pitchers_with_dollars",
+    )
+
+    cache_file = CACHE_DIR / f"phase8_pitchers_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run dollar distribution
+    pitchers = sp_pool_with_budget_phase7 | rp_pool_with_budget_phase7
+    for _, pool in pitchers.items():
+        for player in pool.rostered_players + pool.replacement_players:
+            dollar_values = distribute_player_dollars(player, pool)
+            total_dollars = sum(dollar_values.values())
+            player.valuation.dollar_values = dollar_values
+            player.valuation.total_dollars = total_dollars
+            player.valuation.primary_position = pool.position
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(pitchers, f)
+
+    return pitchers

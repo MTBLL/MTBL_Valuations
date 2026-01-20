@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mtbl_valuations.domain.models import PositionPool, PositionValuation
+from mtbl_valuations.domain.models import PositionPool
 from mtbl_valuations.engine.budget import (
     allocate_pool_budget,
     allocate_position_budgets,
@@ -247,46 +247,27 @@ def run_trp_valuation(
     rp_pool.update(calc_pool_dollars_per_z(rp_pool))
 
     # ========================================================================
-    # Phase 8: Value pitcher players (no multi-eligibility)
+    # Phase 8: Distribute pitcher players budgets (no multi-eligibility)
     # ========================================================================
     print("\nPhase 8: Calculating pitcher dollar values...")
     pitchers = sp_pool | rp_pool
 
     for _, pool in pitchers.items():
-        for rank, player in enumerate(pool.rostered_players + pool.replacement_players):
+        for _, player in enumerate(pool.rostered_players + pool.replacement_players):
             # Calculate dollar values for THIS position
             dollar_values = distribute_player_dollars(player, pool)
             total_dollars = sum(dollar_values.values())
 
-            # Determine tier within THIS pool
-            if player in pool.rostered_players:
-                tier = "ROSTERED"
-            elif player in pool.replacement_players:
-                tier = "REPLACEMENT"
-            else:
-                tier = "BELOW_REPLACEMENT"
-
-            # Store position-specific valuation
-            valuation = PositionValuation(
-                position=pool.position,
-                normalized_z=player.valuation.normalized_z.copy(),
-                total_z=player.valuation.total_z,
-                tier=tier,  # type: ignore
-                position_rank=rank,
-            )
-            player.valuation.valuations_by_position[pool.position] = valuation
-
-            # Also update the main computed values
             player.valuation.dollar_values = dollar_values
             player.valuation.total_dollars = total_dollars
             player.valuation.primary_position = pool.position
-
-    all_pools = hitter_pools | sp_pool | rp_pool
 
     # ========================================================================
     # Phase 9: Validate
     # ========================================================================
     print("\nPhase 9: Validation...")
+
+    all_pools = hitter_pools | sp_pool | rp_pool
     validate_budget_balance(all_pools, league_budget)
     validate_tier_counts(
         all_pools, league_settings["roster_slots"], league_settings["num_teams"]

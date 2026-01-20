@@ -34,8 +34,11 @@ from tests.cache_fixtures import (
     hitter_pools_deduped_converged,
     hitter_pools_with_budgets_phase5,
     hitter_pools_with_util_pool_converged_phase4b,
+    pitchers_with_dollars_phase8,
     rp_pool_phase6c,
+    rp_pool_with_budget_phase7,
     sp_pool_phase6a,
+    sp_pool_with_budget_phase7,
     use_test_cache,
     util_pool_phase4a,
 )
@@ -49,8 +52,11 @@ __all__ = [
     "hitter_pools_deduped_converged",
     "hitter_pools_with_budgets_phase5",
     "hitter_pools_with_util_pool_converged_phase4b",
+    "pitchers_with_dollars_phase8",
     "rp_pool_phase6c",
+    "rp_pool_with_budget_phase7",
     "sp_pool_phase6a",
+    "sp_pool_with_budget_phase7",
     "use_test_cache",
     "util_pool_phase4a",
 ]

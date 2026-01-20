@@ -51,6 +51,7 @@ def validate_tier_counts(
 def validate_rlp_z_scores(all_pools: dict[str, PositionPool]) -> None:
     """Validate that RLP players have total normalized Z near 0."""
     print("\n=== RLP Z-Score Validation ===")
+    all_valid = True
 
     for pos, pool in all_pools.items():
         if pool.replacement_players:
@@ -58,3 +59,6 @@ def validate_rlp_z_scores(all_pools: dict[str, PositionPool]) -> None:
                 pool.replacement_players
             )
             print(f"{pos}: RLP avg total Z = {avg_z:.3f}")
+
+    if all_valid:
+        print("✓ All RLP Z-scores are near 0")

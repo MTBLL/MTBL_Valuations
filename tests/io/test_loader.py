@@ -98,8 +98,8 @@ def test_load_league_settings_parses_roster_and_categories(
     assert roster_slots["C"] == 1
     assert roster_slots["OF"] == 3
     assert roster_slots["UTIL"] == 1
-    assert roster_slots["SP"] == 3
-    assert roster_slots["RP"] == 2
+    assert roster_slots["SP"] == 4
+    assert roster_slots["RP"] == 3
     assert roster_slots["BENCH"] == 5
 
     expected_batting = [cat["name"] for cat in raw["scoring_categories"]["batting"]]

@@ -17,7 +17,14 @@ from mtbl_valuations.engine.pools import (
     build_util_pool,
     dedupe_multi_position_players,
 )
-from mtbl_valuations.engine.valuation import distribute_player_dollars
+from mtbl_valuations.engine.valuation import (
+    distribute_player_dollars,
+)
+from mtbl_valuations.validation.checks import (
+    validate_budget_balance,
+    validate_rlp_z_scores,
+    validate_tier_counts,
+)
 
 if TYPE_CHECKING:
     from mtbl_valuations.domain import LeagueBudget, PositionPool
@@ -43,7 +50,7 @@ class TestPipeline:
         assert (output_dir / "pitchers.json").exists()
 
 
-class TestPipelinePhase3:
+class TestPipelinePhase3RegularHitters:
     def test_pipeline_before_dedupe(self, converged_hitter_pools, league_settings):
         """Test that the pipeline at point Phase 3b."""
         num_teams = league_settings["num_teams"]
@@ -125,10 +132,16 @@ class TestPipelinePhase3:
                 )
 
                 assert len(pool.replacement_players) >= 3
+                for player in pool.rostered_players:
+                    assert player.valuation.tier == "ROSTERED"
+                for player in pool.replacement_players:
+                    assert player.valuation.tier == "REPLACEMENT"
+                for player in pool.below_replacement:
+                    assert player.valuation.tier == "BELOW_REPLACEMENT"
             assert "UTIL" not in hitter_pools.keys()
 
 
-class TestPipelinePhase4:
+class TestPipelinePhase4Util:
     def test_pipeline_build_util_pool_phase4a(
         self,
         dh_and_regular_hitters,
@@ -204,6 +217,12 @@ class TestPipelinePhase4:
                     >= pool.rostered_players[i + 1].valuation.total_z
                     for i in range(len(pool.rostered_players) - 1)
                 )
+            for player in pool.rostered_players:
+                assert player.valuation.tier == "ROSTERED"
+            for player in pool.replacement_players:
+                assert player.valuation.tier == "REPLACEMENT"
+            for player in pool.below_replacement:
+                assert player.valuation.tier == "BELOW_REPLACEMENT"
 
 
 class TestBudgetsPhase5:
@@ -327,6 +346,12 @@ class TestBuildPitcherPoolsPhase6:
             >= sp_pool.rostered_players[i + 1].valuation.total_z  # type: ignore
             for i in range(len(sp_pool.rostered_players) - 1)
         )
+        for player in sp_pool.rostered_players:
+            assert player.valuation.tier == "ROSTERED"
+        for player in sp_pool.replacement_players:
+            assert player.valuation.tier == "REPLACEMENT"
+        for player in sp_pool.below_replacement:
+            assert player.valuation.tier == "BELOW_REPLACEMENT"
 
     def test_build_relievers_phase6c(self, relievers, budget_config, league_settings):
         # Phase 6c
@@ -368,6 +393,12 @@ class TestBuildPitcherPoolsPhase6:
             >= rp_pool.rostered_players[i + 1].valuation.total_z  # type: ignore
             for i in range(len(rp_pool.rostered_players) - 1)
         )
+        for player in rp_pool.rostered_players:
+            assert player.valuation.tier == "ROSTERED"
+        for player in rp_pool.replacement_players:
+            assert player.valuation.tier == "REPLACEMENT"
+        for player in rp_pool.below_replacement:
+            assert player.valuation.tier == "BELOW_REPLACEMENT"
 
 
 class TestPitcherBudgetsPhase7:
@@ -409,8 +440,89 @@ class TestPitcherBudgetsPhase7:
         )
         total_rp_budget = sum(rp_pool["RP"].category_budgets.values())
         assert total_rp_budget == league_budget.rp_budget
+        assert rp_pool["RP"].dollars_per_z.get("IP", None) is None
         rp_pool.update(calc_pool_dollars_per_z(rp_pool))
         assert sum(
             rp_pool["RP"].total_pool_z[cat] * rp_pool["RP"].dollars_per_z[cat]
             for cat in rp_pool["RP"].category_budgets.keys()
         ) == pytest.approx(total_rp_budget)
+
+
+class TestPitcherBudgetDistributionPhase8:
+    def test_allocate_pitcher_budgets_phase8(
+        self,
+        sp_pool_with_budget_phase7,
+        rp_pool_with_budget_phase7,
+        league_budget: LeagueBudget,
+    ):
+        print("\nPhase 8: Calculating pitcher dollar values...")
+        pitchers: dict[str, PositionPool] = (
+            sp_pool_with_budget_phase7 | rp_pool_with_budget_phase7
+        )
+
+        for pos, pool in pitchers.items():
+            allocated_dollars: float = 0.0
+            for player in pool.rostered_players + pool.replacement_players:
+                # Calculate dollar values for THIS position
+                dollar_values = distribute_player_dollars(player, pool)
+                total_dollars = sum(dollar_values.values())
+                if player in pool.rostered_players:
+                    allocated_dollars += total_dollars
+
+                player.valuation.dollar_values = dollar_values
+                player.valuation.total_dollars = total_dollars
+                player.valuation.primary_position = pool.position
+
+            assert allocated_dollars == pytest.approx(
+                sum(p.valuation.total_dollars for p in pool.rostered_players)
+            )
+
+            if pos == "SP":
+                assert pytest.approx(allocated_dollars) == league_budget.sp_budget
+            if pos == "RP":
+                assert pytest.approx(allocated_dollars) == league_budget.rp_budget
+
+
+class TestPipelineValidationPhase9:
+    def test_validate_budget_balance_phase9a(
+        self,
+        hitter_pools_with_budgets_phase5,
+        pitchers_with_dollars_phase8,
+        league_budget: LeagueBudget,
+        capsys,
+    ):
+        all_pools = hitter_pools_with_budgets_phase5 | pitchers_with_dollars_phase8
+        validate_budget_balance(all_pools, league_budget)
+
+        # Capture and verify printed output
+        captured = capsys.readouterr()
+        assert "Budget Validation" in captured.out
+        assert "✓ Budget balance check PASSED" in captured.out
+
+    def test_validate_tier_counts(
+        self,
+        hitter_pools_with_budgets_phase5,
+        pitchers_with_dollars_phase8,
+        league_settings,
+        capsys,
+    ):
+        all_pools = hitter_pools_with_budgets_phase5 | pitchers_with_dollars_phase8
+        validate_tier_counts(
+            all_pools, league_settings["roster_slots"], league_settings["num_teams"]
+        )
+        # Capture and verify printed output
+        captured = capsys.readouterr()
+        assert "✓ All tier counts match expected roster slots" in captured.out
+
+    def test_validate_rlp_z_scores(
+        self,
+        hitter_pools_with_budgets_phase5,
+        pitchers_with_dollars_phase8,
+        capsys,
+    ):
+        all_pools = hitter_pools_with_budgets_phase5 | pitchers_with_dollars_phase8
+        validate_rlp_z_scores(all_pools)
+
+        # Capture and verify printed output
+        captured = capsys.readouterr()
+        assert "✓ All RLP Z-scores are near 0" in captured.out
