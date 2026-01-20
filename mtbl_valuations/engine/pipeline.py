@@ -247,9 +247,9 @@ def run_trp_valuation(
     rp_pool.update(calc_pool_dollars_per_z(rp_pool))
 
     # ========================================================================
-    # Phase 9: Value pitcher players (no multi-eligibility)
+    # Phase 8: Value pitcher players (no multi-eligibility)
     # ========================================================================
-    print("\nPhase 9: Calculating pitcher dollar values...")
+    print("\nPhase 8: Calculating pitcher dollar values...")
     pitchers = sp_pool | rp_pool
 
     for _, pool in pitchers.items():
@@ -284,9 +284,9 @@ def run_trp_valuation(
     all_pools = hitter_pools | sp_pool | rp_pool
 
     # ========================================================================
-    # Phase 10: Validate
+    # Phase 9: Validate
     # ========================================================================
-    print("\nPhase 10: Validation...")
+    print("\nPhase 9: Validation...")
     validate_budget_balance(all_pools, league_budget)
     validate_tier_counts(
         all_pools, league_settings["roster_slots"], league_settings["num_teams"]
@@ -294,9 +294,9 @@ def run_trp_valuation(
     validate_rlp_z_scores(all_pools)
 
     # ========================================================================
-    # Phase 11: Output
+    # Phase 10: Output
     # ========================================================================
-    print("\nPhase 11: Writing output files...")
+    print("\nPhase 10: Writing output files...")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

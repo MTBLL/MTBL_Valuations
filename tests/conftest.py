@@ -29,9 +29,13 @@ from mtbl_valuations.io.loader import (
 from tests.cache_fixtures import (
     converged_hitter_pools,
     converged_hitter_pools_deduped,
+    converged_rp_pool,
+    converged_sp_pool,
     hitter_pools_deduped_converged,
     hitter_pools_with_budgets_phase5,
     hitter_pools_with_util_pool_converged_phase4b,
+    rp_pool_phase6c,
+    sp_pool_phase6a,
     use_test_cache,
     util_pool_phase4a,
 )
@@ -40,9 +44,13 @@ from tests.cache_fixtures import (
 __all__ = [
     "converged_hitter_pools",
     "converged_hitter_pools_deduped",
+    "converged_rp_pool",
+    "converged_sp_pool",
     "hitter_pools_deduped_converged",
     "hitter_pools_with_budgets_phase5",
     "hitter_pools_with_util_pool_converged_phase4b",
+    "rp_pool_phase6c",
+    "sp_pool_phase6a",
     "use_test_cache",
     "util_pool_phase4a",
 ]
@@ -101,11 +109,11 @@ def budget_config_file(tmp_path_factory):
             "QS": 0.15,
         },
         "rp_category_weights": {
-            "IP": 0.15,
-            "ERA": 0.15,
-            "WHIP": 0.15,
+            "IP": 0.0,
+            "ERA": 0.20,
+            "WHIP": 0.20,
             "K/9": 0.40,
-            "SVHD": 0.15,
+            "SVHD": 0.20,
         },
         "replacement_tier_pct": 0.03,
         "min_replacement_tier_size": 3,

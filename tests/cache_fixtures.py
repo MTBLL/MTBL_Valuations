@@ -15,6 +15,7 @@ from mtbl_valuations.engine.budget import (
 )
 from mtbl_valuations.engine.iteration import iterate_to_convergence
 from mtbl_valuations.engine.pools import (
+    build_pitcher_pool,
     build_util_pool,
     dedupe_multi_position_players,
 )
@@ -488,3 +489,252 @@ def hitter_pools_with_budgets_phase5(
         pickle.dump(pools, f)
 
     return pools
+
+
+@pytest.fixture(scope="session")
+def sp_pool_phase6a(
+    starters,
+    league_settings: dict[str, Any],
+    budget_config: dict[str, Any],
+    pitchers_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    """
+    Phase 6a: Cached SP (starting pitcher) pool.
+
+    Expensive operation: build_pitcher_pool() which builds rostered and replacement tiers.
+    Cache key includes pitchers, league settings, and budget config.
+
+    Args:
+        starters: List of starting pitcher Player objects
+        league_settings: League settings
+        budget_config: Budget configuration
+        pitchers_file: Path to pitchers fixture file (for cache key)
+        league_file: Path to league fixture file (for cache key)
+        budget_config_file: Path to budget config file (for cache key)
+        use_test_cache: Whether to use caching
+
+    Returns:
+        Dictionary with single key "SP" containing the SP PositionPool
+    """
+    rlp_tier_pct = budget_config["replacement_tier_pct"]
+    min_rlp_tier_size = budget_config["min_replacement_tier_size"]
+
+    if not use_test_cache:
+        return {
+            "SP": build_pitcher_pool(
+                starters,
+                league_settings["roster_slots"],
+                league_settings["num_teams"],
+                "SP",
+                rlp_tier_pct,
+                min_rlp_tier_size,
+            )
+        }
+
+    # Generate cache key from input files
+    key = _cache_key(
+        pitchers_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase6a_sp_pool",
+    )
+
+    cache_file = CACHE_DIR / f"phase6a_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run expensive operation
+    result = {
+        "SP": build_pitcher_pool(
+            starters,
+            league_settings["roster_slots"],
+            league_settings["num_teams"],
+            "SP",
+            rlp_tier_pct,
+            min_rlp_tier_size,
+        )
+    }
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(result, f)
+
+    return result
+
+
+@pytest.fixture(scope="session")
+def converged_sp_pool(
+    sp_pool_phase6a,
+    league_settings: dict[str, Any],
+    budget_config: dict[str, Any],
+    pitchers_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    if not use_test_cache:
+        return iterate_to_convergence(sp_pool_phase6a, budget_config, league_settings)
+    # Generate cache key from input files
+    key = _cache_key(
+        pitchers_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase6b_converged_sp_pool",
+    )
+
+    cache_file = CACHE_DIR / f"phase6b_converged_sp_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run expensive operation
+    result = iterate_to_convergence(sp_pool_phase6a, budget_config, league_settings)
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(result, f)
+
+    return result
+
+
+@pytest.fixture(scope="session")
+def rp_pool_phase6c(
+    relievers,
+    league_settings: dict[str, Any],
+    budget_config: dict[str, Any],
+    pitchers_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    """
+    Phase 6c: Cached RP (relief pitcher) pool.
+
+    Expensive operation: build_pitcher_pool() which builds rostered and replacement tiers.
+    Cache key includes pitchers, league settings, and budget config.
+
+    Args:
+        relievers: List of relief pitcher Player objects
+        league_settings: League settings
+        budget_config: Budget configuration
+        pitchers_file: Path to pitchers fixture file (for cache key)
+        league_file: Path to league fixture file (for cache key)
+        budget_config_file: Path to budget config file (for cache key)
+        use_test_cache: Whether to use caching
+
+    Returns:
+        Dictionary with single key "RP" containing the RP PositionPool
+    """
+    rlp_tier_pct = budget_config["replacement_tier_pct"]
+    min_rlp_tier_size = budget_config["min_replacement_tier_size"]
+
+    if not use_test_cache:
+        return {
+            "RP": build_pitcher_pool(
+                relievers,
+                league_settings["roster_slots"],
+                league_settings["num_teams"],
+                "RP",
+                rlp_tier_pct,
+                min_rlp_tier_size,
+            )
+        }
+
+    # Generate cache key from input files
+    key = _cache_key(
+        pitchers_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase6c_rp_pool",
+    )
+
+    cache_file = CACHE_DIR / f"phase6c_rp_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run expensive operation
+    result = {
+        "RP": build_pitcher_pool(
+            relievers,
+            league_settings["roster_slots"],
+            league_settings["num_teams"],
+            "RP",
+            rlp_tier_pct,
+            min_rlp_tier_size,
+        )
+    }
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(result, f)
+
+    return result
+
+
+@pytest.fixture(scope="session")
+def converged_rp_pool(
+    rp_pool_phase6c,
+    league_settings: dict[str, Any],
+    budget_config: dict[str, Any],
+    pitchers_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    use_test_cache: bool,
+) -> dict[str, PositionPool]:
+    if not use_test_cache:
+        return iterate_to_convergence(rp_pool_phase6c, budget_config, league_settings)
+
+    # Generate cache key from input files
+    key = _cache_key(
+        pitchers_file.read_text(),
+        league_file.read_text(),
+        budget_config_file.read_text(),
+        "phase6d_converged_rp_pool",
+    )
+
+    cache_file = CACHE_DIR / f"phase6d_converged_rp_{key}.pkl"
+
+    # Try to load from cache
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # Cache corrupted - fall through to recompute
+            pass
+
+    # Not cached or corrupted - run expensive operation
+    result = iterate_to_convergence(rp_pool_phase6c, budget_config, league_settings)
+
+    # Save to cache
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(result, f)
+
+    return result

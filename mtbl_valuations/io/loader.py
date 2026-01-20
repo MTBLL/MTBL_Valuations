@@ -157,11 +157,17 @@ def load_league_settings(file_path: Path) -> dict[str, Any]:
     }
 
     # Convert lineup_slot_counts to position names
+    # My league requires 4 GS to have a valid pitching category counts, so we split the P slots into SP and RP
+    # TODO: import the league settings minimums from upstream so we can programmatically figure out roster minimums
     roster_slots: dict[str, int] = {}
     for slot_id, count in data["roster_settings"]["lineup_slot_counts"].items():
         slot_name = SLOT_MAPPING.get(int(slot_id))
         if slot_name and count > 0:
-            roster_slots[slot_name] = count
+            roster_slots[slot_name] = roster_slots.get(slot_name, 0) + count
+        if slot_name == "P" and count > 0:
+            split_p_slots = count // 2
+            roster_slots["SP"] = roster_slots.get("SP", 0) + split_p_slots
+            roster_slots["RP"] = roster_slots.get("RP", 0) + split_p_slots
 
     # Extract scoring categories
     batting_categories = [cat["name"] for cat in data["scoring_categories"]["batting"]]

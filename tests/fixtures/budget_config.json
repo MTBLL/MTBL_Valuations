@@ -17,11 +17,11 @@
     "QS": 0.15
   },
   "rp_category_weights": {
-    "IP": 0.15,
-    "ERA": 0.15,
-    "WHIP": 0.15,
-    "K/9": 0.4,
-    "SVHD": 0.15
+    "IP": 0.0,
+    "ERA": 0.20,
+    "WHIP": 0.20,
+    "K/9": 0.40,
+    "SVHD": 0.20
   },
   "replacement_tier_pct": 0.03,
   "min_replacement_tier_size": 3,

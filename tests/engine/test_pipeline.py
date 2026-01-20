@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mtbl_valuations.engine.budget import (
+    allocate_pool_budget,
     allocate_position_budgets,
     calc_pool_dollars_per_z,
 )
@@ -286,8 +287,9 @@ class TestBuildPitcherPoolsPhase6:
     def test_build_starters_pool_phase6a(
         self, starters, league_settings, budget_config
     ):
+        """Phase 6a should return all SPs sorted by FIP"""
         print("\nPhase 6: Building pitcher pools...")
-        sp_pool: dict[str, PositionPool] = {
+        pitcher_pool: dict[str, PositionPool] = {
             "SP": build_pitcher_pool(
                 starters,
                 league_settings["roster_slots"],
@@ -297,4 +299,118 @@ class TestBuildPitcherPoolsPhase6:
                 budget_config["min_replacement_tier_size"],
             )
         }
-        assert sp_pool is not None
+        assert pitcher_pool is not None
+        sp_pool = pitcher_pool["SP"]
+        assert sp_pool.roster_slots == 44
+        # Assert properly sorted by FIP; ascending
+        assert all(
+            sp_pool.rostered_players[i].stats.fip  # type: ignore
+            <= sp_pool.rostered_players[i + 1].stats.fip  # type: ignore
+            for i in range(len(sp_pool.rostered_players) - 1)
+        )
+
+    def test_converge_sp_pool_phase6b(
+        self, sp_pool_phase6a, budget_config, league_settings
+    ):
+        # Phase 6b
+        print("  Iterating SP pool to convergence...")
+        pitcher_pool = iterate_to_convergence(
+            sp_pool_phase6a, budget_config, league_settings
+        )
+        assert pitcher_pool is not None
+        sp_pool = pitcher_pool["SP"]
+        assert sp_pool.roster_slots == 44
+        assert len(sp_pool.rostered_players) == sp_pool.roster_slots
+        # Assert properly sorted by zScore; decending
+        assert all(
+            sp_pool.rostered_players[i].valuation.total_z  # type: ignore
+            >= sp_pool.rostered_players[i + 1].valuation.total_z  # type: ignore
+            for i in range(len(sp_pool.rostered_players) - 1)
+        )
+
+    def test_build_relievers_phase6c(self, relievers, budget_config, league_settings):
+        # Phase 6c
+        pitcher_pool: dict[str, PositionPool] = {
+            "RP": build_pitcher_pool(
+                relievers,
+                league_settings["roster_slots"],
+                league_settings["num_teams"],
+                "RP",
+                budget_config["replacement_tier_pct"],
+                budget_config["min_replacement_tier_size"],
+            )
+        }
+        assert pitcher_pool is not None
+        rp_pool = pitcher_pool["RP"]
+        assert rp_pool.roster_slots == 33
+        # Assert properly sorted by FIP; ascending
+        assert all(
+            rp_pool.rostered_players[i].stats.fip  # type: ignore
+            <= rp_pool.rostered_players[i + 1].stats.fip  # type: ignore
+            for i in range(len(rp_pool.rostered_players) - 1)
+        )
+
+    def test_converge_relievers_phase6d(
+        self, rp_pool_phase6c, budget_config, league_settings
+    ):
+        # Phase 6d
+        print("  Iterating RP pool to convergence...")
+        pitcher_pool = iterate_to_convergence(
+            rp_pool_phase6c, budget_config, league_settings
+        )
+        assert pitcher_pool is not None
+        rp_pool = pitcher_pool["RP"]
+        assert rp_pool.roster_slots == 33
+        assert len(rp_pool.rostered_players) == rp_pool.roster_slots
+        # Assert properly sorted by zScore; decending
+        assert all(
+            rp_pool.rostered_players[i].valuation.total_z  # type: ignore
+            >= rp_pool.rostered_players[i + 1].valuation.total_z  # type: ignore
+            for i in range(len(rp_pool.rostered_players) - 1)
+        )
+
+
+class TestPitcherBudgetsPhase7:
+    def test_allocate_sp_budgets_phase7(
+        self, converged_sp_pool, budget_config, league_budget: LeagueBudget
+    ):
+        print("\nPhase 7: Allocating pitcher budgets...")
+        sp_pool: dict[str, PositionPool] = converged_sp_pool
+        sp_pool.update(
+            {
+                "SP": allocate_pool_budget(
+                    sp_pool["SP"],
+                    league_budget.sp_budget,
+                    budget_config["sp_category_weights"],
+                )
+            }
+        )
+        total_sp_budget = sum(sp_pool["SP"].category_budgets.values())
+        assert total_sp_budget == league_budget.sp_budget
+        sp_pool.update(calc_pool_dollars_per_z(sp_pool))
+        assert sum(
+            sp_pool["SP"].total_pool_z[cat] * sp_pool["SP"].dollars_per_z[cat]
+            for cat in sp_pool["SP"].category_budgets.keys()
+        ) == pytest.approx(total_sp_budget)
+
+    def test_allocate_rp_budgets_phase7(
+        self, converged_rp_pool, budget_config, league_budget: LeagueBudget
+    ):
+        print("\nPhase 7: Allocating RP budgets...")
+        rp_pool: dict[str, PositionPool] = converged_rp_pool
+        rp_pool.update(
+            {
+                "RP": allocate_pool_budget(
+                    rp_pool["RP"],
+                    league_budget.rp_budget,
+                    budget_config["rp_category_weights"],
+                )
+            }
+        )
+        total_rp_budget = sum(rp_pool["RP"].category_budgets.values())
+        assert total_rp_budget == league_budget.rp_budget
+        rp_pool.update(calc_pool_dollars_per_z(rp_pool))
+        assert sum(
+            rp_pool["RP"].total_pool_z[cat] * rp_pool["RP"].dollars_per_z[cat]
+            for cat in rp_pool["RP"].category_budgets.keys()
+        ) == pytest.approx(total_rp_budget)
