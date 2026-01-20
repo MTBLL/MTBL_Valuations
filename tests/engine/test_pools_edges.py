@@ -1,4 +1,5 @@
 import math
+from typing import Literal, cast
 
 from mtbl_valuations.domain.models import HitterStats, Player, PositionPool, PositionValuation
 from mtbl_valuations.engine.pools import (
@@ -30,11 +31,12 @@ def _make_hitter(player_id: str, pos: str, total_z: float, tier: str) -> Player:
             slg=0.4,
         ),
     )
+    tier_literal: Literal["ROSTERED", "REPLACEMENT", "BELOW_REPLACEMENT"] = tier  # type: ignore[assignment]
     player.valuation.valuations_by_position[pos] = PositionValuation(
         position=pos,
         normalized_z={},
         total_z=total_z,
-        tier=tier,
+        tier=tier_literal,
         position_rank=1,
     )
     return player

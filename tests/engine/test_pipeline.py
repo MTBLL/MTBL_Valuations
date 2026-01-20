@@ -323,8 +323,10 @@ class TestBuildPitcherPoolsPhase6:
         assert sp_pool.roster_slots == 44
         # Assert properly sorted by FIP; ascending
         assert all(
-            sp_pool.rostered_players[i].stats.fip  # type: ignore
-            <= sp_pool.rostered_players[i + 1].stats.fip  # type: ignore
+            sp_pool.rostered_players[i].stats.fip
+
+            <= sp_pool.rostered_players[i + 1].stats.fip
+
             for i in range(len(sp_pool.rostered_players) - 1)
         )
 
@@ -342,8 +344,10 @@ class TestBuildPitcherPoolsPhase6:
         assert len(sp_pool.rostered_players) == sp_pool.roster_slots
         # Assert properly sorted by zScore; decending
         assert all(
-            sp_pool.rostered_players[i].valuation.total_z  # type: ignore
-            >= sp_pool.rostered_players[i + 1].valuation.total_z  # type: ignore
+            sp_pool.rostered_players[i].valuation.total_z
+
+            >= sp_pool.rostered_players[i + 1].valuation.total_z
+
             for i in range(len(sp_pool.rostered_players) - 1)
         )
         for player in sp_pool.rostered_players:
@@ -370,8 +374,10 @@ class TestBuildPitcherPoolsPhase6:
         assert rp_pool.roster_slots == 33
         # Assert properly sorted by FIP; ascending
         assert all(
-            rp_pool.rostered_players[i].stats.fip  # type: ignore
-            <= rp_pool.rostered_players[i + 1].stats.fip  # type: ignore
+            rp_pool.rostered_players[i].stats.fip
+
+            <= rp_pool.rostered_players[i + 1].stats.fip
+
             for i in range(len(rp_pool.rostered_players) - 1)
         )
 
@@ -389,8 +395,10 @@ class TestBuildPitcherPoolsPhase6:
         assert len(rp_pool.rostered_players) == rp_pool.roster_slots
         # Assert properly sorted by zScore; decending
         assert all(
-            rp_pool.rostered_players[i].valuation.total_z  # type: ignore
-            >= rp_pool.rostered_players[i + 1].valuation.total_z  # type: ignore
+            rp_pool.rostered_players[i].valuation.total_z
+
+            >= rp_pool.rostered_players[i + 1].valuation.total_z
+
             for i in range(len(rp_pool.rostered_players) - 1)
         )
         for player in rp_pool.rostered_players:

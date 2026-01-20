@@ -27,7 +27,8 @@ def test_load_batters_maps_projection_fields(batters_file):
         records = json.load(f)
 
     record: dict[str, object] = _get_record_by_id(records, "32801")
-    projections = record.get("stats").get("projections")  # type: ignore
+    projections = record.get("stats").get("projections")
+
 
     hitters = load_batters(batters_file)
     hitter = next(hp for hp in hitters if hp.player.id == str(record["id_espn"]))
@@ -58,10 +59,12 @@ def test_load_pitchers_assigns_roles_and_stats(pitchers_file):
         records = json.load(f)
 
     swingman_record = _get_record_by_id(records, "42584")
-    swingman_proj = swingman_record["stats"]["projections"]  # type: ignore
+    swingman_proj = swingman_record["stats"]["projections"]
+
 
     rp_record = _get_record_by_id(records, "4734325")
-    rp_proj = rp_record["stats"]["projections"]  # type: ignore
+    rp_proj = rp_record["stats"]["projections"]
+
 
     pitchers = load_pitchers(pitchers_file)
 

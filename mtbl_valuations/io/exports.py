@@ -58,22 +58,23 @@ def export_hitter_position_csv(
         }
 
         # Stats for each category: raw stat, z-score, dollars
-        player = cast(HitterPlayer, player)
-        stats = player.stats  # type: ignore
+        hitter_player = cast(HitterPlayer, player)
+        hitter_stats = hitter_player.stats
+        assert hitter_stats is not None  # type guard
         for cat in categories:
             # Get raw stat value
             if cat == "R":
-                raw_val = stats.r
+                raw_val = hitter_stats.r
             elif cat == "HR":
-                raw_val = stats.hr
+                raw_val = hitter_stats.hr
             elif cat == "RBI":
-                raw_val = stats.rbi
+                raw_val = hitter_stats.rbi
             elif cat == "SBN":
-                raw_val = stats.sbn
+                raw_val = hitter_stats.sbn
             elif cat == "OBP":
-                raw_val = stats.obp
+                raw_val = hitter_stats.obp
             elif cat == "SLG":
-                raw_val = stats.slg
+                raw_val = hitter_stats.slg
             else:
                 raw_val = 0.0
 
@@ -83,7 +84,7 @@ def export_hitter_position_csv(
         rows.append(row)
 
     # Sort by total dollars descending
-    rows = sorted(rows, key=lambda r: r["total_dollars"], reverse=True)
+    rows = sorted(rows, key=lambda r: float(r["total_dollars"]), reverse=True)  # type: ignore[arg-type]
 
     # Write to CSV
     if rows:
@@ -127,26 +128,26 @@ def export_pitcher_pool_csv(
         }
 
         # Stats for each category: raw stat, z-score, dollars
-        player = cast(PitcherPlayer, player)
-        stats = player.stats  # type: ignore
+        pitcher_player = cast(PitcherPlayer, player)
+        pitcher_stats = pitcher_player.stats
+        assert pitcher_stats is not None  # type guard
         for cat in categories:
             # Get raw stat value
             if cat == "IP":
-                raw_val = stats.outs / 3.0  # Convert outs to IP
+                raw_val = pitcher_stats.outs / 3.0  # Convert outs to IP
             elif cat == "ERA":
-                raw_val = stats.era
+                raw_val = pitcher_stats.era
             elif cat == "WHIP":
-                raw_val = stats.whip
+                raw_val = pitcher_stats.whip
             elif cat == "K/9":
-                raw_val = stats.k9
+                raw_val = pitcher_stats.k9
             elif cat == "QS":
-                raw_val = stats.qs
+                raw_val = pitcher_stats.qs
             elif cat == "SVHD":
-                raw_val = stats.svhd
+                raw_val = pitcher_stats.svhd
             else:
                 raw_val = 0.0
 
-            player = cast(Player, player)
             row[f"{cat}_raw"] = round(raw_val, 3)
 
             # Skip IP z-score and dollars for RP pools (IP weight is 0.0)
@@ -161,7 +162,7 @@ def export_pitcher_pool_csv(
         rows.append(row)
 
     # Sort by total dollars descending
-    rows = sorted(rows, key=lambda r: r["total_dollars"], reverse=True)
+    rows = sorted(rows, key=lambda r: float(r["total_dollars"]), reverse=True)  # type: ignore[arg-type]
 
     # Write to CSV
     if rows:

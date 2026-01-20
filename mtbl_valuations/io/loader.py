@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from ..domain.models import (
     HitterPlayer,
@@ -101,6 +101,7 @@ def load_pitchers(file_path: Path) -> list[PitcherPlayer]:
         # RPs with >100 IP projection are likely swingmen/long relievers who should be SP
         projected_gs = float(proj.get("GS", 0))
         svhd = proj.get("SVHD", proj.get("SV", 0) + proj.get("HLD", 0))
+        role: Literal["SP", "RP"]
         if primary_pos == "RP" and projected_gs > svhd:
             role = "SP"
         else:

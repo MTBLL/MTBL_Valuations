@@ -46,7 +46,7 @@ def write_valuations_csv(
             rows.append(row)
 
     # Sort by dollar value descending
-    rows = sorted(rows, key=lambda r: r["dollar_value"], reverse=True)
+    rows = sorted(rows, key=lambda r: float(r["dollar_value"]), reverse=True)  # type: ignore[arg-type]
 
     # Write to CSV
     if rows:

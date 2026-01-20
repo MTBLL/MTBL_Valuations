@@ -6,17 +6,17 @@
 
 Run all tests:
 ```bash
-python -m pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 Run tests in a specific file:
 ```bash
-python -m pytest tests/engine/test_iteration.py -v
+uv run pytest tests/engine/test_iteration.py -v
 ```
 
 Run a specific test:
 ```bash
-python -m pytest tests/engine/test_iteration.py::TestIteration::test_iteration_to_convergence -v
+uv run pytest tests/engine/test_iteration.py::TestIteration::test_iteration_to_convergence -v
 ```
 
 ### Test Caching System
@@ -27,7 +27,7 @@ The test suite uses a phase-based caching system to speed up tests by caching ex
 
 By default, tests use cached convergence results:
 ```bash
-python -m pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 The cache is stored in `tests/.cache/phases/` and persists across test runs.
@@ -36,7 +36,7 @@ The cache is stored in `tests/.cache/phases/` and persists across test runs.
 
 To run tests without using cached results:
 ```bash
-python -m pytest tests/ -v --no-cache
+uv run pytest tests/ -v --no-cache
 ```
 
 This is useful when:
@@ -66,23 +66,23 @@ If you modify any of these files, the cache will miss and regenerate automatical
 
 View test execution times:
 ```bash
-python -m pytest tests/ -v --durations=10
+uv run pytest tests/ -v --durations=10
 ```
 
 Compare with and without cache:
 ```bash
 # Without cache (slower, fresh computation)
-python -m pytest tests/engine/test_iteration.py --no-cache --durations=5
+uv run pytest tests/engine/test_iteration.py --no-cache --durations=5
 
 # With cache (faster, uses cached results)
-python -m pytest tests/engine/test_iteration.py --durations=5
+uv run pytest tests/engine/test_iteration.py --durations=5
 ```
 
 ### Test Coverage
 
 Run tests with coverage reporting:
 ```bash
-python -m pytest tests/ --cov=mtbl_valuations --cov-report=term-missing
+uv run pytest tests/ --cov=mtbl_valuations --cov-report=term-missing
 ```
 
 ### Common Test Scenarios
@@ -90,13 +90,13 @@ python -m pytest tests/ --cov=mtbl_valuations --cov-report=term-missing
 #### Development Workflow
 ```bash
 # Run specific test file while developing
-python -m pytest tests/engine/test_pools.py -v
+uv run pytest tests/engine/test_pools.py -v
 
 # Run with detailed output for debugging
-python -m pytest tests/engine/test_pools.py -vv
+uv run pytest tests/engine/test_pools.py -vv
 
 # Run with print statements visible
-python -m pytest tests/engine/test_pools.py -v -s
+uv run pytest tests/engine/test_pools.py -v -s
 ```
 
 #### CI/CD Pipeline
@@ -109,10 +109,10 @@ uv run pytest tests/ --cov=mtbl_valuations --cov-report=term-missing
 ```bash
 # Clear cache and measure fresh performance
 rm -rf tests/.cache/phases/*.pkl
-python -m pytest tests/engine/test_iteration.py --durations=10
+uv run pytest tests/engine/test_iteration.py --durations=10
 
 # Run again to measure cached performance
-python -m pytest tests/engine/test_iteration.py --durations=10
+uv run pytest tests/engine/test_iteration.py --durations=10
 ```
 
 ### Cached Fixtures

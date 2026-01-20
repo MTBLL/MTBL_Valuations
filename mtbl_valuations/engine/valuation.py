@@ -42,7 +42,8 @@ def calc_means(
     ):
         return {}
 
-    sample_obj = players[0].stats if is_stat else players[0].valuation  # type: ignore
+    sample_obj = players[0].stats if is_stat else players[0].valuation
+
 
     # Handle dict-type fields (like raw_z, normalized_z)
     if isinstance(sample_obj, dict):
@@ -62,7 +63,8 @@ def calc_means(
     for cat in categories:
         values = []
         for player in players:
-            obj = player.stats if is_stat else player.valuation  # type: ignore
+            obj = player.stats if is_stat else player.valuation
+
             if isinstance(obj, dict):
                 val = obj.get(cat, 0.0)
             elif hasattr(obj, field):
@@ -97,7 +99,8 @@ def calc_stdevs(
     for cat in means.keys():
         values = []
         for player in players:
-            obj = player.stats if is_stat else player.valuation  # type: ignore
+            obj = player.stats if is_stat else player.valuation
+
             if isinstance(obj, dict):
                 val = obj.get(cat, 0.0)
             elif hasattr(obj, field):
@@ -126,7 +129,8 @@ def get_player_stat(player: Player, category: str) -> float:
     if not hasattr(player, "stats"):
         return 0.0
 
-    stats = player.stats  # type: ignore
+    stats = player.stats
+
 
     # Map category names to stat fields
     category_map = {
@@ -215,7 +219,8 @@ def get_composite_metric(player: Player) -> float:
     if not hasattr(player, "stats"):
         return 0.0
 
-    stats = player.stats  # type: ignore
+    stats = player.stats
+
 
     if isinstance(stats, HitterStats):
         return stats.wrc_plus

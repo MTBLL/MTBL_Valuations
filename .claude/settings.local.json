@@ -11,7 +11,9 @@
       "Bash(ls:*)",
       "Bash(sort:*)",
       "Bash(python:*)",
-      "Bash(pytest:*)"
+      "Bash(pytest:*)",
+      "Bash(mypy:*)",
+      "Bash(uv add:*)"
     ]
   }
 }

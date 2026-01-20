@@ -217,7 +217,8 @@ class TestDollarsPerZ:
         # Get UTIL pool
         util_row = hitter_pools[hitter_pools["position"] == "UTIL"]
         assert len(util_row) == 1, "UTIL pool should exist"
-        util_row = util_row.iloc[0]  # type: ignore
+        util_row = util_row.iloc[0]
+
 
         # Get other hitter positions
         other_hitters = hitter_pools[hitter_pools["position"] != "UTIL"]
@@ -234,7 +235,8 @@ class TestDollarsPerZ:
                 continue
 
             # Get rates from other positions for this category
-            other_rates = other_hitters[col].dropna()  # type: ignore
+            other_rates = other_hitters[col].dropna()
+
 
             if len(other_rates) == 0:
                 continue

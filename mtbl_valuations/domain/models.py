@@ -127,5 +127,5 @@ class LeagueBudget(MTBLBaseModel):
     sp_budget: float
     rp_budget: float
     category_budgets: dict[str, dict[str, float]] = Field(
-        default_factory=lambda: {"hitter": {}, "sp": {}, "rp": {}}
+        default_factory=lambda: {"hitter": {}, "sp": {}, "rp": {}}  # type: ignore[arg-type]
     )
