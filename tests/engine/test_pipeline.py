@@ -324,9 +324,7 @@ class TestBuildPitcherPoolsPhase6:
         # Assert properly sorted by FIP; ascending
         assert all(
             sp_pool.rostered_players[i].stats.fip
-
             <= sp_pool.rostered_players[i + 1].stats.fip
-
             for i in range(len(sp_pool.rostered_players) - 1)
         )
 
@@ -345,9 +343,7 @@ class TestBuildPitcherPoolsPhase6:
         # Assert properly sorted by zScore; decending
         assert all(
             sp_pool.rostered_players[i].valuation.total_z
-
             >= sp_pool.rostered_players[i + 1].valuation.total_z
-
             for i in range(len(sp_pool.rostered_players) - 1)
         )
         for player in sp_pool.rostered_players:
@@ -375,9 +371,7 @@ class TestBuildPitcherPoolsPhase6:
         # Assert properly sorted by FIP; ascending
         assert all(
             rp_pool.rostered_players[i].stats.fip
-
             <= rp_pool.rostered_players[i + 1].stats.fip
-
             for i in range(len(rp_pool.rostered_players) - 1)
         )
 
@@ -396,9 +390,7 @@ class TestBuildPitcherPoolsPhase6:
         # Assert properly sorted by zScore; decending
         assert all(
             rp_pool.rostered_players[i].valuation.total_z
-
             >= rp_pool.rostered_players[i + 1].valuation.total_z
-
             for i in range(len(rp_pool.rostered_players) - 1)
         )
         for player in rp_pool.rostered_players:
