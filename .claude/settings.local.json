@@ -14,7 +14,8 @@
       "Bash(pytest:*)",
       "Bash(mypy:*)",
       "Bash(uv add:*)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "Bash(grep:*)"
     ]
   }
 }
