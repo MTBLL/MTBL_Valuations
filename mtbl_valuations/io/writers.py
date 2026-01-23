@@ -16,8 +16,14 @@ def write_valuations_csv(
     all_pools: dict[str, PositionPool],
     categories: dict[str, list[str]],
 ) -> None:
-    """Write player valuations to CSV."""
+    """Write player valuations to CSV.
+
+    Each player appears once per role, using their primary_position.
+    Deduplicates players who appear in multiple pools (e.g., UTIL players).
+    Two-way players (e.g., Ohtani) appear twice - once as hitter, once as pitcher.
+    """
     rows = []
+    seen_players = set()  # Track (player_id, role) we've already added
 
     for pos, pool in all_pools.items():
         all_players = (
@@ -25,10 +31,19 @@ def write_valuations_csv(
         )
 
         for player in all_players:
+            # Use (player_id, role) as key to allow two-way players
+            player_key = (player.id, pool.role)
+
+            # Skip if we've already added this player-role (e.g., UTIL player in original pool)
+            if player_key in seen_players:
+                continue
+
+            seen_players.add(player_key)
+
             row = {
                 "player_id": player.id,
                 "name": player.name,
-                "position": pos,
+                "position": player.valuation.primary_position,  # Use primary_position
                 "role": pool.role,
                 "total_z": round(player.valuation.total_z, 3),
                 "dollar_value": round(player.valuation.total_dollars, 2),

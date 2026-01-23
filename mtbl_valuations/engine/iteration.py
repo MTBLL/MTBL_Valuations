@@ -5,7 +5,7 @@ from __future__ import annotations
 import statistics
 from typing import Any, Iterable
 
-from mtbl_valuations.domain.models import Player, PositionPool, PositionValuation
+from mtbl_valuations.domain.models import Player, PositionPool, PositionValuation, Tier
 from mtbl_valuations.engine.pools import rebuild_replacement_tier_on_z
 from mtbl_valuations.engine.valuation import (
     get_categories,
@@ -155,6 +155,7 @@ def _ensure_position_valuation(player: Player, position: str) -> None:
 def assign_player_tiers(pool: PositionPool, track_z_per_pool: bool) -> None:
     # Mark player tiers
     pos = pool.position
+    tier: Tier
     for player in pool.rostered_players:
         tier = "ROSTERED"
         if track_z_per_pool:
