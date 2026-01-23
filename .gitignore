@@ -3,3 +3,4 @@
 .uv_cache/
 .pytest_cache/
 .temp/
+tests/.cache/

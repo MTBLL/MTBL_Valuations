@@ -24,6 +24,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      - name: Clear test cache directory
+        run: rm -rf tests/.cache
+
       - name: Run pytest
         run: uv run pytest tests/ --no-cache --cov=mtbl_valuations --cov-report=xml
 
