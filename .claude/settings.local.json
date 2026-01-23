@@ -15,7 +15,8 @@
       "Bash(mypy:*)",
       "Bash(uv add:*)",
       "Bash(tee:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(git push)"
     ]
   }
 }
