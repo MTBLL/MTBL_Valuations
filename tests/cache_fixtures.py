@@ -28,18 +28,25 @@ if TYPE_CHECKING:
 # Cache directory for phase results
 CACHE_DIR = Path(__file__).parent / ".cache" / "phases"
 
+# CACHE_VERSION: Increment this when code logic changes to invalidate all caches
+# Version history:
+#   1: Initial implementation
+#   2: Removed Phase 4d (UTIL removal), changed baseline shift logic, fixed exports
+CACHE_VERSION = 2
+
 
 def _cache_key(*inputs: Any) -> str:
     """
-    Generate cache key from inputs.
+    Generate cache key from inputs, including CACHE_VERSION.
 
     Args:
         *inputs: Variable number of inputs to hash (usually file contents)
 
     Returns:
-        12-character hex digest for cache filename
+        12-character hex digest for cache filename including version
     """
-    content = str(inputs).encode()
+    # Include CACHE_VERSION in hash to invalidate all caches when logic changes
+    content = str((CACHE_VERSION, *inputs)).encode()
     return hashlib.sha256(content).hexdigest()[:12]
 
 
