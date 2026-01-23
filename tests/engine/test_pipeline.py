@@ -182,7 +182,8 @@ class TestPipelinePhase4Util:
         league_settings,
     ):
         num_teams = league_settings["num_teams"]
-        hitter_pools = hitter_pools_deduped_converged
+        # Create a copy to avoid mutating the session-scoped fixture
+        hitter_pools = dict(hitter_pools_deduped_converged)
         # assert Michael Busch is in 1B replacement_players
         assert (
             next(

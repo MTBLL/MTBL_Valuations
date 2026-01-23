@@ -361,7 +361,8 @@ def hitter_pools_with_util_pool_converged_phase4b(
     Returns:
         Converged UTIL pool
     """
-    hitter_pools = hitter_pools_deduped_converged
+    # Create a copy to avoid mutating the session-scoped fixture
+    hitter_pools = dict(hitter_pools_deduped_converged)
     if not use_test_cache:
         results = iterate_to_convergence(
             {"UTIL": util_pool_phase4a},
