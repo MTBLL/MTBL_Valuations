@@ -30,7 +30,7 @@ class TestIteration:
             > first_rlp_ss.valuation.valuations_by_position["SS"].total_z
         )
 
-    def test_rlp_raw_avg_and_replacement_present(
+    def test_rlp_raw_avg_and_replacement_players(
         self, converged_hitter_pools, league_settings
     ):
         """

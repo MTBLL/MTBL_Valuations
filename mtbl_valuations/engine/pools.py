@@ -203,6 +203,23 @@ def build_util_pool(
     return util_pool
 
 
+def assign_primary_position_from_pool(
+    pool: PositionPool,
+) -> None:
+    """
+    Assign primary_position to all players in a pool based on pool's position.
+
+    Used for:
+    - UTIL pool players (Phase 4c)
+    - Pitcher pools (Phase 8)
+    - Any single-position pool where players should be assigned to the pool's position
+
+    Does NOT assign tiers - use _assign_player_tiers() separately for that.
+    """
+    for player in pool.rostered_players + pool.replacement_players + pool.below_replacement:
+        player.valuation.primary_position = pool.position
+
+
 def _build_replacement_tier(
     pool: PositionPool,
     position_players: list[Player],
@@ -291,60 +308,6 @@ def rebuild_replacement_tier_on_z(
         replacement_candidates = remaining[:min_rlp_tier_size]
 
     return replacement_candidates
-
-
-def assign_final_positions(
-    pools: dict[str, PositionPool],
-    players: list[Player],
-) -> tuple[list[Player], int]:
-    """
-    Assign each player to their most valuable position after convergence.
-
-    Examines each player's valuations_by_position dict and assigns them to the
-    position where they have the highest dollar value.
-
-    Args:
-        pools: Dictionary of position pools (used for reference).
-        players: List of all players to assign.
-
-    Returns:
-        Tuple of (players with primary_position set, number of position changes).
-    """
-    changes = 0
-
-    for player in players:
-        if not player.valuation.valuations_by_position:
-            continue
-
-        # Find position with highest total_z where player is ROSTERED
-        # We use total_z (not total_dollars) because dollar values aren't
-        # available until all pools have fully stabilized including UTIL
-        best_position = None
-        best_z = float("-inf")
-
-        for position, valuation in player.valuation.valuations_by_position.items():
-            # Prefer positions where player is rostered
-            if valuation.tier == "ROSTERED" and valuation.total_z > best_z:
-                best_z = valuation.total_z
-                best_position = position
-
-        # If not rostered anywhere, fall back to highest total_z regardless of tier
-        if best_position is None:
-            for position, valuation in player.valuation.valuations_by_position.items():
-                if valuation.total_z > best_z:
-                    best_z = valuation.total_z
-                    best_position = position
-
-        # If still no position (edge case), use first available
-        if best_position is None and player.valuation.valuations_by_position:
-            best_position = next(iter(player.valuation.valuations_by_position.keys()))
-
-        # Check if position changed
-        if best_position and player.valuation.primary_position != best_position:
-            changes += 1
-            player.valuation.primary_position = best_position
-
-    return players, changes
 
 
 def rebuild_pools_after_assignment(

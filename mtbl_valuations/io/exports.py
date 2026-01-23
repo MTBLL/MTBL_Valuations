@@ -31,13 +31,14 @@ def export_hitter_position_csv(
     for player in pool.below_replacement:
         player_tiers[player.id] = "BELOW_REPLACEMENT"
 
-    all_players = (
-        pool.rostered_players + pool.replacement_players + pool.below_replacement
-    )
+    # Export rostered + replacement players from this pool
+    # Players may have primary_position != pool.position (e.g., UTIL players in 1B pool)
+    all_players = pool.rostered_players + pool.replacement_players
 
     for player in all_players:
-        if not hasattr(player, "stats") or player.stats is None:
-            continue
+        assert hasattr(player, "stats") and player.stats is not None, (
+            "Player missing stats"
+        )
 
         # Get position-specific valuation for THIS pool
         valuation_tier = player_tiers.get(player.id, "UNKNOWN")
@@ -82,8 +83,8 @@ def export_hitter_position_csv(
 
         rows.append(row)
 
-    # Sort by total dollars descending
-    rows = sorted(rows, key=lambda r: float(r["total_dollars"]), reverse=True)  # type: ignore[arg-type]
+    # Sort by total_z descending (reflects actual performance tier)
+    rows = sorted(rows, key=lambda r: float(r["total_z"]), reverse=True)  # type: ignore[arg-type]
 
     # Write to CSV
     if rows:
@@ -106,13 +107,14 @@ def export_pitcher_pool_csv(
     for player in pool.below_replacement:
         player_tiers[player.id] = "BELOW_REPLACEMENT"
 
-    all_players = (
-        pool.rostered_players + pool.replacement_players + pool.below_replacement
-    )
+    # Export rostered + replacement players from this pool
+    # Players may have primary_position != pool.position (e.g., UTIL players in 1B pool)
+    all_players = pool.rostered_players + pool.replacement_players
 
     for player in all_players:
-        if not hasattr(player, "stats") or player.stats is None:
-            continue
+        assert hasattr(player, "stats") and player.stats is not None, (
+            "Player missing stats"
+        )
 
         row = {
             # Identity
@@ -160,8 +162,8 @@ def export_pitcher_pool_csv(
 
         rows.append(row)
 
-    # Sort by total dollars descending
-    rows = sorted(rows, key=lambda r: float(r["total_dollars"]), reverse=True)  # type: ignore[arg-type]
+    # Sort by total_z descending (reflects actual performance tier)
+    rows = sorted(rows, key=lambda r: float(r["total_z"]), reverse=True)  # type: ignore[arg-type]
 
     # Write to CSV
     if rows:

@@ -13,9 +13,11 @@ from mtbl_valuations.engine.budget import (
     calc_pool_dollars_per_z,
 )
 from mtbl_valuations.engine.iteration import (
+    assign_player_tiers,
     iterate_to_convergence,
 )
 from mtbl_valuations.engine.pools import (
+    assign_primary_position_from_pool,
     build_pitcher_pool,
     build_position_pools,
     build_util_pool,
@@ -166,7 +168,14 @@ def run_trp_valuation(
         league_settings,
     )["UTIL"]
 
+    # Phase 4c
+    # Assign primary positions for UTIL pool players
+    print("  Assigning UTIL players to UTIL position...")
+    assign_primary_position_from_pool(util_pool)
+    assign_player_tiers(util_pool, track_z_per_pool=False)
+
     # Add UTIL to hitter pools
+    # Note: UTIL players remain in their original position pools (for exports)
     hitter_pools["UTIL"] = util_pool
 
     # ========================================================================
@@ -253,6 +262,9 @@ def run_trp_valuation(
     pitchers = sp_pool | rp_pool
 
     for _, pool in pitchers.items():
+        # Assign primary positions for this pitcher pool
+        assign_primary_position_from_pool(pool)
+
         for _, player in enumerate(pool.rostered_players + pool.replacement_players):
             # Calculate dollar values for THIS position
             dollar_values = distribute_player_dollars(player, pool)
@@ -260,7 +272,6 @@ def run_trp_valuation(
 
             player.valuation.dollar_values = dollar_values
             player.valuation.total_dollars = total_dollars
-            player.valuation.primary_position = pool.position
 
     # ========================================================================
     # Phase 9: Validate

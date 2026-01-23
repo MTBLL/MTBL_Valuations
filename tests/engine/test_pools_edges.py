@@ -1,11 +1,9 @@
-import math
-from typing import Literal, cast
+from typing import Literal
 
 from mtbl_valuations.domain.models import HitterStats, Player, PositionPool, PositionValuation
 from mtbl_valuations.engine.pools import (
     _debug,
     _refill_tiers_after_dedupe,
-    assign_final_positions,
     build_position_pools,
     dedupe_multi_position_players,
     rebuild_pools_after_assignment,
@@ -56,34 +54,6 @@ def test_build_position_pools_sp_rp_and_no_rostered():
 def test_rebuild_replacement_tier_on_z_empty():
     pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
     assert rebuild_replacement_tier_on_z([], pool, 0.03, 1) == []
-
-
-def test_assign_final_positions_fallbacks():
-    p_no_vals = Player(
-        id="p0",
-        name="NoVals",
-        team="T",
-        positions=["SS"],
-        role="HITTER",
-        stats=None,
-    )
-
-    p_no_rostered = _make_hitter("p1", "SS", 1.0, "REPLACEMENT")
-    p_no_rostered.valuation.valuations_by_position["2B"] = PositionValuation(
-        position="2B",
-        normalized_z={},
-        total_z=2.0,
-        tier="BELOW_REPLACEMENT",
-        position_rank=2,
-    )
-
-    p_nan = _make_hitter("p2", "OF", math.nan, "REPLACEMENT")
-
-    players, changes = assign_final_positions({}, [p_no_vals, p_no_rostered, p_nan])
-    assert players is not None
-    assert changes == 2
-    assert p_no_rostered.valuation.primary_position == "2B"
-    assert p_nan.valuation.primary_position == "OF"
 
 
 def test_rebuild_pools_after_assignment_debug(monkeypatch, capsys):

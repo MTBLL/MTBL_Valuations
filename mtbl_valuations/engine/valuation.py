@@ -162,20 +162,26 @@ def distribute_player_dollars(player: Player, pool: PositionPool) -> dict[str, f
     """
     Calculate dollar values per category for a player.
 
-    Applies the same baseline shift used in calc_pool_dollars_per_z to ensure
-    budget balances correctly when negative Z-scores exist.
+    For rostered players: applies baseline shift to ensure minimum $1 value
+    For replacement/below players: applies direct $/Z without baseline shift
     """
     dollar_values = {}
 
+    # Check if player is rostered in this pool
+    is_rostered = player in pool.rostered_players
+
     for category, z_value in player.valuation.normalized_z.items():
         rate = pool.dollars_per_z.get(category, 0.0)
-        baseline_shift = pool.z_baseline_shift.get(category, 0.0)
 
-        # Apply the same baseline shift that was used to calculate $/Z rate
-        adjusted_z = z_value + baseline_shift
-
-        # Ensure no negative dollars (shouldn't happen with proper shift, but safety check)
-        adjusted_z = max(0.0, adjusted_z)
+        if is_rostered:
+            # Rostered players: apply baseline shift
+            baseline_shift = pool.z_baseline_shift.get(category, 0.0)
+            adjusted_z = z_value + baseline_shift
+            # Ensure no negative dollars
+            adjusted_z = max(0.0, adjusted_z)
+        else:
+            # Replacement/below players: direct $/Z (can be negative/zero)
+            adjusted_z = z_value
 
         dollar_values[category] = adjusted_z * rate
 

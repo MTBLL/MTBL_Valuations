@@ -149,14 +149,17 @@ def output_dir():
         yield Path(tmpdir)
 
 
-@pytest.fixture
-def run_trp(batters_file, pitchers_file, league_file, budget_config_file, output_dir):
+@pytest.fixture(scope="session")
+def run_trp_session(batters_file, pitchers_file, league_file, budget_config_file, tmp_path_factory):
     """
-    Run TRP valuation and return pools.
+    Run TRP valuation once per session and cache the output directory.
 
-    This fixture runs the full pipeline and parses the output to return
-    the position pools for testing.
+    This fixture runs the full pipeline once and returns the output directory
+    for all tests to use. Much faster than running the pipeline for each test.
     """
+    # Create session-scoped temp directory
+    output_dir = tmp_path_factory.mktemp("trp_output")
+
     # Run the pipeline
     run_trp_valuation(
         batters_file,
@@ -170,9 +173,18 @@ def run_trp(batters_file, pitchers_file, league_file, budget_config_file, output
     position_summary_file = output_dir / "position_summary.csv"
     assert position_summary_file.exists(), "position_summary.csv should be created"
 
-    # For now, return output_dir so tests can inspect files
-    # TODO: Parse output and reconstruct pools
     return output_dir
+
+
+@pytest.fixture
+def run_trp(run_trp_session):
+    """
+    Alias for session-scoped run_trp fixture.
+
+    Provides the output directory from a single pipeline run.
+    Tests should only read from this directory, not modify it.
+    """
+    return run_trp_session
 
 
 @pytest.fixture(scope="session")

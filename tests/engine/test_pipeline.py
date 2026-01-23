@@ -183,6 +183,15 @@ class TestPipelinePhase4Util:
     ):
         num_teams = league_settings["num_teams"]
         hitter_pools = hitter_pools_deduped_converged
+        # assert Michael Busch is in 1B replacement_players
+        assert (
+            next(
+                p
+                for p in hitter_pools["1B"].replacement_players
+                if p.name == "Michael Busch"
+            )
+            is not None
+        )
         # Phase 4b
         # Iterate UTIL pool with composite RLP baseline
         print("  Iterating UTIL pool with composite RLP baseline...")

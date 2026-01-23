@@ -8,7 +8,6 @@ from mtbl_valuations.domain.models import (
 )
 from mtbl_valuations.engine.pools import (
     _calc_replacement_threshold,
-    assign_final_positions,
     build_position_pools,
     build_util_pool,
     dedupe_multi_position_players,
@@ -394,8 +393,8 @@ class TestBuildUtilPool:
 
 
 class TestAssignFinalPositions:
-    def test_assign_final_positions_prefers_rostered_tier(self):
-        """Test that assignment prefers rostered tier even if replacement has higher total_z."""
+    def test_dedupe_prefers_rostered_tier_with_better_rank(self):
+        """Test that dedupe prefers rostered tier with better position rank."""
         player = Player(
             id="test1",
             name="Test Player",
@@ -407,36 +406,37 @@ class TestAssignFinalPositions:
             ),
         )
 
-        # SS: Rostered but lower total_z
+        # SS: Rostered with rank 5 (worse rank)
         player.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={"R": 0.5},
-            total_z=0.5,  # Lower Z
-            tier="ROSTERED",  # Rostered
+            total_z=0.5,
+            tier="ROSTERED",
             position_rank=5,
         )
 
-        # 2B: Replacement but higher total_z
+        # 2B: Replacement with rank 15 (even worse rank, different tier)
         player.valuation.valuations_by_position["2B"] = PositionValuation(
             position="2B",
             normalized_z={"R": 1.0},
-            total_z=1.0,  # Higher Z
-            tier="REPLACEMENT",  # But only replacement level
+            total_z=1.0,
+            tier="REPLACEMENT",
             position_rank=15,
         )
 
-        pools: dict[str, PositionPool] = {}
-        assign_final_positions(pools, [player])
+        # Create minimal pools with the player
+        ss_pool = PositionPool(position="SS", role="HITTER", roster_slots=10)
+        ss_pool.rostered_players = [player]
 
-        # Should choose SS because player is ROSTERED there (tier takes priority over Z)
+        pools = {"SS": ss_pool}
+
+        pools, changes = dedupe_multi_position_players(pools, 0.03, 5)
+
+        # Should choose SS because it's the best ROSTERED position (rank 5 < rank 15)
         assert player.valuation.primary_position == "SS"
 
-    def test_assign_final_positions_chooses_highest_z(self):
-        """Test that players are assigned to the position with highest total_z.
-
-        We use total_z (not total_dollars) because dollar values aren't available
-        until all pools have fully stabilized including UTIL.
-        """
+    def test_dedupe_chooses_best_position_rank(self):
+        """Test that dedupe assigns to position with best (lowest) rank among rostered positions."""
         player = Player(
             id="test1",
             name="Test Player",
@@ -448,29 +448,36 @@ class TestAssignFinalPositions:
             ),
         )
 
-        # Set up valuations where 2B has higher total_z than SS
+        # SS: Rostered with rank 3
         player.valuation.valuations_by_position["SS"] = PositionValuation(
             position="SS",
             normalized_z={"R": 0.5},
-            total_z=0.5,  # Lower Z
+            total_z=0.5,
             tier="ROSTERED",
             position_rank=3,
         )
 
+        # 2B: Rostered with rank 2 (better rank, should win)
         player.valuation.valuations_by_position["2B"] = PositionValuation(
             position="2B",
             normalized_z={"R": 0.7},
-            total_z=0.7,  # Higher Z
+            total_z=0.7,
             tier="ROSTERED",
             position_rank=2,
         )
 
-        # Create empty pools (not used but required by API)
-        pools: dict[str, PositionPool] = {}
+        # Create minimal pools with the player
+        ss_pool = PositionPool(position="SS", role="HITTER", roster_slots=10)
+        ss_pool.rostered_players = []
+        twoB_pool = PositionPool(position="2B", role="HITTER", roster_slots=10)
+        twoB_pool.rostered_players = [player]
 
-        _, changes = assign_final_positions(pools, [player])
+        pools = {"SS": ss_pool, "2B": twoB_pool}
 
-        assert changes == 1  # Position changed from "" to "2B"
+        pools, changes = dedupe_multi_position_players(pools, 0.03, 5)
+
+        # Should choose 2B because it has better rank (2 < 3)
+        assert changes == 1  # Position changed to "2B"
         assert player.valuation.primary_position == "2B"
 
 

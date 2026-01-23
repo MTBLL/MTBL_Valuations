@@ -20,12 +20,12 @@ from mtbl_valuations.validation.checks import (
 )
 
 
-def _make_hitter(player_id: str) -> Player:
-    return Player(
+def _make_hitter(player_id: str, position: str = "SS") -> Player:
+    player = Player(
         id=player_id,
         name=f"Hitter {player_id}",
         team="T",
-        positions=["SS"],
+        positions=[position],
         role="HITTER",
         stats=HitterStats(
             pa=10,
@@ -38,33 +38,37 @@ def _make_hitter(player_id: str) -> Player:
             slg=0.4,
         ),
     )
+    player.valuation.primary_position = position
+    return player
 
 
-def _make_pitcher(player_id: str) -> Player:
-    return Player(
+def _make_pitcher(player_id: str, position: str = "RP") -> Player:
+    player = Player(
         id=player_id,
         name=f"Pitcher {player_id}",
         team="T",
-        positions=["RP"],
-        role="RP",
+        positions=[position],
+        role="RP",  # Role is always RP for this helper
         stats=PitcherStats(outs=9, era=3.0, whip=1.1, k9=9.0, qs=0, svhd=2),
     )
+    player.valuation.primary_position = position
+    return player
 
 
 def test_export_hitter_position_csv(tmp_path):
     pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
-    pool.rostered_players = [_make_hitter("h1")]
+    pool.rostered_players = [_make_hitter("h1", "SS")]
     pool.replacement_players = []
-    pool.below_replacement = [
-        Player(
-            id="h2",
-            name="NoStats",
-            team="T",
-            positions=["SS"],
-            role="HITTER",
-            stats=None,
-        )
-    ]
+    no_stats_player = Player(
+        id="h2",
+        name="NoStats",
+        team="T",
+        positions=["SS"],
+        role="HITTER",
+        stats=None,
+    )
+    no_stats_player.valuation.primary_position = "SS"
+    pool.below_replacement = [no_stats_player]
 
     output_path = tmp_path / "ss.csv"
     export_hitter_position_csv(pool, output_path, ["R", "XYZ"])
@@ -76,18 +80,18 @@ def test_export_hitter_position_csv(tmp_path):
 
 def test_export_pitcher_pool_csv(tmp_path):
     pool = PositionPool(position="RP", role="RP", roster_slots=1)
-    pool.rostered_players = [_make_pitcher("p1")]
+    pool.rostered_players = [_make_pitcher("p1", "RP")]
     pool.replacement_players = []
-    pool.below_replacement = [
-        Player(
-            id="p2",
-            name="NoStats",
-            team="T",
-            positions=["RP"],
-            role="RP",
-            stats=None,
-        )
-    ]
+    no_stats_pitcher = Player(
+        id="p2",
+        name="NoStats",
+        team="T",
+        positions=["RP"],
+        role="RP",
+        stats=None,
+    )
+    no_stats_pitcher.valuation.primary_position = "RP"
+    pool.below_replacement = [no_stats_pitcher]
 
     output_path = tmp_path / "rp.csv"
     export_pitcher_pool_csv(pool, output_path, ["IP", "FOO"])

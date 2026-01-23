@@ -6,11 +6,10 @@ import statistics
 from typing import Any, Iterable
 
 from mtbl_valuations.domain.models import Player, PositionPool, PositionValuation
-from mtbl_valuations.engine.valuation import get_player_stat
-
 from mtbl_valuations.engine.pools import rebuild_replacement_tier_on_z
 from mtbl_valuations.engine.valuation import (
     get_categories,
+    get_player_stat,
 )
 
 
@@ -126,7 +125,7 @@ def iterate_to_convergence(
                 p for p in all_pool_players if p.id not in rostered_and_replacement_ids
             ]
 
-            _assign_player_tiers(pool, track_z_per_pool)
+            assign_player_tiers(pool, track_z_per_pool)
 
         # Check convergence
         if changes <= convergence_threshold:
@@ -153,25 +152,27 @@ def _ensure_position_valuation(player: Player, position: str) -> None:
         )
 
 
-def _assign_player_tiers(pool: PositionPool, track_z_per_pool: bool) -> None:
+def assign_player_tiers(pool: PositionPool, track_z_per_pool: bool) -> None:
     # Mark player tiers
+    pos = pool.position
     for player in pool.rostered_players:
+        tier = "ROSTERED"
         if track_z_per_pool:
-            player.valuation.valuations_by_position[pool.position].tier = "ROSTERED"
+            player.valuation.valuations_by_position[pos].tier = tier
         else:
-            player.valuation.tier = "ROSTERED"
+            player.valuation.tier = tier
     for player in pool.replacement_players:
+        tier = "REPLACEMENT"
         if track_z_per_pool:
-            player.valuation.valuations_by_position[pool.position].tier = "REPLACEMENT"
+            player.valuation.valuations_by_position[pos].tier = tier
         else:
-            player.valuation.tier = "REPLACEMENT"
+            player.valuation.tier = tier
     for player in pool.below_replacement:
+        tier = "BELOW_REPLACEMENT"
         if track_z_per_pool:
-            player.valuation.valuations_by_position[
-                pool.position
-            ].tier = "BELOW_REPLACEMENT"
+            player.valuation.valuations_by_position[pos].tier = tier
         else:
-            player.valuation.tier = "BELOW_REPLACEMENT"
+            player.valuation.tier = tier
 
 
 def _store_z_scores(

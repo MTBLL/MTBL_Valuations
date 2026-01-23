@@ -40,4 +40,4 @@ markers = [
 ]
 
 [tool.coverage.run]
-omit = ["mtbl_valuations/__main__.py"]
+omit = ["mtbl_valuations/__main__.py", "tests/*"]
