@@ -97,8 +97,11 @@ def converged_hitter_pools(
         Converged hitter pools with valuation data
     """
     if not use_test_cache:
+        # Create deep copy to avoid mutating the session-scoped regular_hitter_pools fixture
+        import copy
+        pools_copy = copy.deepcopy(regular_hitter_pools)
         return iterate_to_convergence(
-            regular_hitter_pools,
+            pools_copy,
             budget_config,
             league_settings,
             track_z_per_pool=True,
@@ -124,8 +127,11 @@ def converged_hitter_pools(
             pass
 
     # Not cached or corrupted - run expensive operation
+    # Create deep copy to avoid mutating the session-scoped regular_hitter_pools fixture
+    import copy
+    pools_copy = copy.deepcopy(regular_hitter_pools)
     result = iterate_to_convergence(
-        regular_hitter_pools,
+        pools_copy,
         budget_config,
         league_settings,
         track_z_per_pool=True,

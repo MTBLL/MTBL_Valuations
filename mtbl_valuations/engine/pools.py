@@ -423,6 +423,13 @@ def dedupe_multi_position_players(
         pools, target_replacement_sizes, rlp_tier_pct, min_rlp_tier_size
     )
 
+    # Update tier attributes to match the tier lists after refill
+    # Import here to avoid circular dependency (iteration.py imports from pools.py)
+    from mtbl_valuations.engine.iteration import assign_player_tiers
+
+    for pool in pools.values():
+        assign_player_tiers(pool, track_z_per_pool=True)
+
     if _debug_enabled():
         for pos, pool in pools.items():
             _debug(
