@@ -195,11 +195,14 @@ class TestPipelinePhase4Util:
         )
         # Phase 4b
         # Iterate UTIL pool with composite RLP baseline
+        # Use track_z_per_pool=True to avoid clobbering tier attributes of players
+        # who remain in their original position pools
         print("  Iterating UTIL pool with composite RLP baseline...")
         util_pool = iterate_to_convergence(
             {"UTIL": util_pool_phase4a},
             budget_config,
             league_settings,
+            track_z_per_pool=True,
         )["UTIL"]
 
         # Add UTIL to hitter pools
@@ -222,17 +225,23 @@ class TestPipelinePhase4Util:
 
             # assert UTIL players are ordered by z-score
             if pos == "UTIL":
+                # UTIL pool uses track_z_per_pool=True, so check valuations_by_position
                 assert all(
-                    pool.rostered_players[i].valuation.total_z
-                    >= pool.rostered_players[i + 1].valuation.total_z
+                    pool.rostered_players[i].valuation.valuations_by_position["UTIL"].total_z
+                    >= pool.rostered_players[i + 1].valuation.valuations_by_position["UTIL"].total_z
                     for i in range(len(pool.rostered_players) - 1)
                 )
+            # Check tier integrity only for players assigned to this pool
+            # (players with primary_position != this pool have been reassigned to UTIL)
             for player in pool.rostered_players:
-                assert player.valuation.tier == "ROSTERED"
+                if player.valuation.primary_position == pos:
+                    assert player.valuation.tier == "ROSTERED", f"{pos} pool: {player.name} in rostered_players but tier={player.valuation.tier}"
             for player in pool.replacement_players:
-                assert player.valuation.tier == "REPLACEMENT"
+                if player.valuation.primary_position == pos:
+                    assert player.valuation.tier == "REPLACEMENT", f"{pos} pool: {player.name} in replacement_players but tier={player.valuation.tier}"
             for player in pool.below_replacement:
-                assert player.valuation.tier == "BELOW_REPLACEMENT"
+                if player.valuation.primary_position == pos:
+                    assert player.valuation.tier == "BELOW_REPLACEMENT", f"{pos} pool: {player.name} in below_replacement but tier={player.valuation.tier}"
 
 
 class TestBudgetsPhase5:

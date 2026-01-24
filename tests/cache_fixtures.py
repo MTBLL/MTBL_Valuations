@@ -172,8 +172,11 @@ def converged_hitter_pools_deduped(
         Final single-position hitter pools after deduplication
     """
     if not use_test_cache:
+        # Create deep copy to avoid mutating the session-scoped converged_hitter_pools fixture
+        import copy
+        pools_copy = copy.deepcopy(converged_hitter_pools)
         return dedupe_multi_position_players(
-            converged_hitter_pools,
+            pools_copy,
             budget_config["replacement_tier_pct"],
             budget_config["min_replacement_tier_size"],
         )
@@ -198,8 +201,11 @@ def converged_hitter_pools_deduped(
             pass
 
     # Not cached or corrupted - run expensive operation
+    # Create deep copy to avoid mutating the session-scoped converged_hitter_pools fixture
+    import copy
+    pools_copy = copy.deepcopy(converged_hitter_pools)
     deduped, num_dedupes = dedupe_multi_position_players(
-        converged_hitter_pools,
+        pools_copy,
         budget_config["replacement_tier_pct"],
         budget_config["min_replacement_tier_size"],
     )
@@ -225,7 +231,10 @@ def hitter_pools_deduped_converged(
 ) -> dict[str, PositionPool]:
     deduped, _ = converged_hitter_pools_deduped
     if not use_test_cache:
-        return iterate_to_convergence(deduped, budget_config, league_settings)
+        # Create deep copy to avoid mutating the deduped pools from parent fixture
+        import copy
+        pools_copy = copy.deepcopy(deduped)
+        return iterate_to_convergence(pools_copy, budget_config, league_settings)
 
     # Generate cache key from input files
     key = _cache_key(
@@ -247,7 +256,10 @@ def hitter_pools_deduped_converged(
             pass
 
     # Not cached or corrupted - run expensive operation
-    result = iterate_to_convergence(deduped, budget_config, league_settings)
+    # Create deep copy to avoid mutating the deduped pools from parent fixture
+    import copy
+    pools_copy = copy.deepcopy(deduped)
+    result = iterate_to_convergence(pools_copy, budget_config, league_settings)
 
     # Save to cache
     CACHE_DIR.mkdir(parents=True, exist_ok=True)

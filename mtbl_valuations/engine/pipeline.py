@@ -161,17 +161,23 @@ def run_trp_valuation(
 
     # Phase 4b
     # Iterate UTIL pool with composite RLP baseline
+    # Use track_z_per_pool=True to avoid clobbering tier attributes of players
+    # who remain in their original position pools
     print("  Iterating UTIL pool with composite RLP baseline...")
     util_pool = iterate_to_convergence(
         {"UTIL": util_pool},
         budget_config,
         league_settings,
+        track_z_per_pool=True,
     )["UTIL"]
 
     # Phase 4c
-    # Assign primary positions for UTIL pool players
+    # Assign primary positions and tiers for UTIL pool players
     print("  Assigning UTIL players to UTIL position...")
     assign_primary_position_from_pool(util_pool)
+    # Update tier attributes to match UTIL pool tiers (their primary position)
+    # This overwrites the tier from their original pools, which is expected
+    # since primary_position is now UTIL
     assign_player_tiers(util_pool, track_z_per_pool=False)
 
     # Add UTIL to hitter pools
