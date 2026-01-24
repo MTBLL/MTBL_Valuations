@@ -175,9 +175,16 @@ def run_trp_valuation(
     # Assign primary positions and tiers for UTIL pool players
     print("  Assigning UTIL players to UTIL position...")
     assign_primary_position_from_pool(util_pool)
+
+    # Copy per-pool Z-scores to top-level for budget allocation
+    # UTIL was iterated with track_z_per_pool=True, so Z-scores are in valuations_by_position
+    for player in util_pool.rostered_players + util_pool.replacement_players + util_pool.below_replacement:
+        if "UTIL" in player.valuation.valuations_by_position:
+            util_val = player.valuation.valuations_by_position["UTIL"]
+            player.valuation.normalized_z = util_val.normalized_z
+            player.valuation.total_z = util_val.total_z
+
     # Update tier attributes to match UTIL pool tiers (their primary position)
-    # This overwrites the tier from their original pools, which is expected
-    # since primary_position is now UTIL
     assign_player_tiers(util_pool, track_z_per_pool=False)
 
     # Add UTIL to hitter pools

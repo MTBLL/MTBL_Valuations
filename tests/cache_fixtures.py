@@ -304,8 +304,11 @@ def util_pool_phase4a(
     min_rlp_tier_size = budget_config["min_replacement_tier_size"]
 
     if not use_test_cache:
+        # Deep copy to avoid mutating session-scoped fixture
+        import copy
+        pools_copy = copy.deepcopy(hitter_pools_deduped_converged)
         return build_util_pool(
-            hitter_pools_deduped_converged,
+            pools_copy,
             pure_dh_players,
             league_settings["roster_slots"],
             league_settings["num_teams"],
@@ -333,8 +336,11 @@ def util_pool_phase4a(
             pass
 
     # Not cached or corrupted - run expensive operation
+    # Deep copy to avoid mutating session-scoped fixture
+    import copy
+    pools_copy = copy.deepcopy(hitter_pools_deduped_converged)
     result = build_util_pool(
-        hitter_pools_deduped_converged,
+        pools_copy,
         pure_dh_players,
         league_settings["roster_slots"],
         league_settings["num_teams"],
