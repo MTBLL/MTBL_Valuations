@@ -1,0 +1,98 @@
+{
+  "league_id": 10998,
+  "season_id": 2025,
+  "scoring_period_id": 196,
+  "num_teams": 11,
+  "roster_settings": {
+    "lineup_slot_counts": {
+      "0": 1,
+      "1": 1,
+      "2": 1,
+      "3": 1,
+      "4": 1,
+      "5": 3,
+      "6": 0,
+      "7": 0,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 1,
+      "13": 2,
+      "14": 3,
+      "15": 2,
+      "16": 5,
+      "17": 6,
+      "18": 0,
+      "19": 0
+    }
+  },
+  "scoring_categories": {
+    "batting": [
+      {
+        "stat_id": 20,
+        "name": "R",
+        "is_reverse": false
+      },
+      {
+        "stat_id": 5,
+        "name": "HR",
+        "is_reverse": false
+      },
+      {
+        "stat_id": 21,
+        "name": "RBI",
+        "is_reverse": false
+      },
+      {
+        "stat_id": 25,
+        "name": "SBN",
+        "is_reverse": false
+      },
+      {
+        "stat_id": 9,
+        "name": "SLG",
+        "is_reverse": false
+      },
+      {
+        "stat_id": 17,
+        "name": "OBP",
+        "is_reverse": false
+      }
+    ],
+    "pitching": [
+      {
+        "stat_id": 47,
+        "name": "ERA",
+        "is_reverse": true
+      },
+      {
+        "stat_id": 41,
+        "name": "WHIP",
+        "is_reverse": true
+      },
+      {
+        "stat_id": 63,
+        "name": "QS",
+        "is_reverse": false
+      },
+      {
+        "stat_id": 49,
+        "name": "K/9",
+        "is_reverse": false
+      },
+      {
+        "stat_id": 34,
+        "name": "OUTS",
+        "is_reverse": false
+      },
+      {
+        "stat_id": 83,
+        "name": "SVHD",
+        "is_reverse": false
+      }
+    ]
+  },
+  "acquisition_budget": 150,
+  "draft_auction_budget": 260
+}

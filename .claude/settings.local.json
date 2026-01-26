@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync:*)",
+      "Bash(uv run:*)",
+      "Bash(.venv/bin/python:*)",
+      "Bash(python3:*)",
+      "Bash(bc:*)",
+      "Bash(wc:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(ls:*)",
+      "Bash(sort:*)",
+      "Bash(python:*)",
+      "Bash(pytest:*)",
+      "Bash(mypy:*)",
+      "Bash(uv add:*)",
+      "Bash(tee:*)",
+      "Bash(grep:*)",
+      "Bash(git push)"
+    ]
+  }
+}
