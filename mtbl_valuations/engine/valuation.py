@@ -158,19 +158,35 @@ def get_player_stat(player: Player, category: str) -> float:
     return float(value)
 
 
-def distribute_player_dollars(player: Player, pool: PositionPool) -> dict[str, float]:
+def distribute_player_dollars(
+    player: Player, pool: PositionPool, store_in_position_valuation: bool = False
+) -> dict[str, float]:
     """
     Calculate dollar values per category for a player.
 
     For rostered players: applies baseline shift to ensure minimum $1 value
     For replacement/below players: applies direct $/Z without baseline shift
+
+    Args:
+        player: The player to calculate dollars for
+        pool: The position pool context
+        store_in_position_valuation: If True, stores results in valuations_by_position
+
+    Returns:
+        Dictionary of dollar values per category
     """
     dollar_values = {}
+
+    # Determine which Z-scores to use
+    if store_in_position_valuation and pool.position in player.valuation.valuations_by_position:
+        normalized_z = player.valuation.valuations_by_position[pool.position].normalized_z
+    else:
+        normalized_z = player.valuation.normalized_z
 
     # Check if player is rostered in this pool
     is_rostered = player in pool.rostered_players
 
-    for category, z_value in player.valuation.normalized_z.items():
+    for category, z_value in normalized_z.items():
         rate = pool.dollars_per_z.get(category, 0.0)
 
         if is_rostered:
@@ -184,6 +200,11 @@ def distribute_player_dollars(player: Player, pool: PositionPool) -> dict[str, f
             adjusted_z = z_value
 
         dollar_values[category] = adjusted_z * rate
+
+    # Store in position valuation if requested
+    if store_in_position_valuation and pool.position in player.valuation.valuations_by_position:
+        player.valuation.valuations_by_position[pool.position].dollar_values = dollar_values
+        player.valuation.valuations_by_position[pool.position].total_dollars = sum(dollar_values.values())
 
     return dollar_values
 

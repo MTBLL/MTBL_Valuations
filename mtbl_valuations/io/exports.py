@@ -10,8 +10,35 @@ import pandas as pd
 from mtbl_valuations.domain.models import (
     HitterPlayer,
     PitcherPlayer,
+    Player,
     PositionPool,
 )
+
+
+def _get_position_valuation(
+    player: Player, position: str
+) -> tuple[float, dict[str, float], dict[str, float], float]:
+    """
+    Get position-specific valuation data.
+
+    Returns: (total_z, normalized_z, dollar_values, total_dollars)
+    """
+    if position in player.valuation.valuations_by_position:
+        pos_val = player.valuation.valuations_by_position[position]
+        return (
+            pos_val.total_z,
+            pos_val.normalized_z,
+            pos_val.dollar_values,
+            pos_val.total_dollars
+        )
+    else:
+        # Fallback to top-level for single-position players
+        return (
+            player.valuation.total_z,
+            player.valuation.normalized_z,
+            player.valuation.dollar_values,
+            player.valuation.total_dollars
+        )
 
 
 def export_hitter_position_csv(
@@ -42,8 +69,12 @@ def export_hitter_position_csv(
 
         # Get position-specific valuation for THIS pool
         valuation_tier = player_tiers.get(player.id, "UNKNOWN")
-        valuation_total_z = player.valuation.total_z
-        valuation_normalized_z = player.valuation.normalized_z
+        (
+            valuation_total_z,
+            valuation_normalized_z,
+            valuation_dollar_values,
+            valuation_total_dollars
+        ) = _get_position_valuation(player, pool.position)
 
         row = {
             # Identity
@@ -54,7 +85,7 @@ def export_hitter_position_csv(
             "eligible_positions": "|".join(player.positions),
             "tier": valuation_tier,
             "total_z": round(valuation_total_z, 3),
-            "total_dollars": round(player.valuation.total_dollars, 2),
+            "total_dollars": round(valuation_total_dollars, 2),
         }
 
         # Stats for each category: raw stat, z-score, dollars
@@ -116,6 +147,14 @@ def export_pitcher_pool_csv(
             "Player missing stats"
         )
 
+        # Get position-specific valuation for THIS pool
+        (
+            valuation_total_z,
+            valuation_normalized_z,
+            valuation_dollar_values,
+            valuation_total_dollars
+        ) = _get_position_valuation(player, pool.position)
+
         row = {
             # Identity
             "id": player.id,
@@ -124,8 +163,8 @@ def export_pitcher_pool_csv(
             "primary_position": player.valuation.primary_position,
             "eligible_positions": "|".join(player.positions),
             "tier": player_tiers.get(player.id, "UNKNOWN"),
-            "total_z": round(player.valuation.total_z, 3),
-            "total_dollars": round(player.valuation.total_dollars, 2),
+            "total_z": round(valuation_total_z, 3),
+            "total_dollars": round(valuation_total_dollars, 2),
         }
 
         # Stats for each category: raw stat, z-score, dollars
@@ -155,9 +194,9 @@ def export_pitcher_pool_csv(
             if pool.position == "RP" and cat == "IP":
                 continue
 
-            row[f"{cat}_z"] = round(player.valuation.normalized_z.get(cat, 0.0), 3)
+            row[f"{cat}_z"] = round(valuation_normalized_z.get(cat, 0.0), 3)
             row[f"{cat}_dollars"] = round(
-                player.valuation.dollar_values.get(cat, 0.0), 2
+                valuation_dollar_values.get(cat, 0.0), 2
             )
 
         rows.append(row)

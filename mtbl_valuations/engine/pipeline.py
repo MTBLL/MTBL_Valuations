@@ -43,6 +43,27 @@ from mtbl_valuations.validation.checks import (
 )
 
 
+def validate_position_valuation_hydration(pools: dict[str, PositionPool]) -> None:
+    """Validate that rostered/replacement players have position-specific dollar values."""
+    warnings = []
+
+    for pos, pool in pools.items():
+        for player in pool.rostered_players + pool.replacement_players:
+            if pos not in player.valuation.valuations_by_position:
+                warnings.append(f"{player.name} in {pos} pool missing PositionValuation")
+            else:
+                pos_val = player.valuation.valuations_by_position[pos]
+                if not pos_val.dollar_values:
+                    warnings.append(f"{player.name} at {pos} has empty dollar_values")
+
+    if warnings:
+        print("\n⚠️  PositionValuation Hydration Warnings:")
+        for warning in warnings[:10]:  # Limit to first 10
+            print(f"  - {warning}")
+        if len(warnings) > 10:
+            print(f"  ... and {len(warnings) - 10} more")
+
+
 def run_trp_valuation(
     batters_file: Path,
     pitchers_file: Path,
@@ -200,14 +221,20 @@ def run_trp_valuation(
     hitter_pools = calc_pool_dollars_per_z(hitter_pools)
 
     # Distribute dollars to all hitter players
-    for _, pool in hitter_pools.items():
+    for pos, pool in hitter_pools.items():
         for player in pool.rostered_players + pool.replacement_players:
-            dollar_values = distribute_player_dollars(player, pool)
+            dollar_values = distribute_player_dollars(
+                player, pool, store_in_position_valuation=True
+            )
             total_dollars = sum(dollar_values.values())
 
-            # Store dollars on the player's valuation
-            player.valuation.dollar_values = dollar_values
-            player.valuation.total_dollars = total_dollars
+            # Store at top level if this is the player's primary position
+            if player.valuation.primary_position == pos:
+                player.valuation.dollar_values = dollar_values
+                player.valuation.total_dollars = total_dollars
+
+    # Validate position valuations are hydrated
+    validate_position_valuation_hydration(hitter_pools)
 
     # ========================================================================
     # Phase 6: Build pitcher pools

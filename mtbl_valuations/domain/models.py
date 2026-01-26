@@ -53,6 +53,8 @@ class PositionValuation(MTBLBaseModel):
     position: str
     normalized_z: dict[str, float]
     total_z: float
+    dollar_values: dict[str, float] = Field(default_factory=dict)
+    total_dollars: float = 0.0
     tier: Tier
     position_rank: int
 
