@@ -13,7 +13,6 @@ from mtbl_valuations.engine.budget import (
     calc_pool_dollars_per_z,
 )
 from mtbl_valuations.engine.iteration import (
-    assign_player_tiers_global,
     finalize_pool_player_valuations,
     iterate_to_convergence_global,
     iterate_to_convergence_per_position,
@@ -25,7 +24,7 @@ from mtbl_valuations.engine.pools import (
     build_util_pool,
     dedupe_multi_position_players,
 )
-from mtbl_valuations.engine.valuation import distribute_player_dollars, distribute_pool_dollars
+from mtbl_valuations.engine.valuation import distribute_pool_dollars
 from mtbl_valuations.io.exports import export_detailed_position_csvs
 from mtbl_valuations.io.loader import (
     load_batters,

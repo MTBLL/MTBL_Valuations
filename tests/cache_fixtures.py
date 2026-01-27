@@ -389,11 +389,15 @@ def hitter_pools_with_util_pool_converged_phase4b(
     # Create a copy to avoid mutating the session-scoped fixture
     hitter_pools = dict(hitter_pools_deduped_converged)
     if not use_test_cache:
+        from mtbl_valuations.engine.iteration import finalize_pool_player_valuations
+
         results = iterate_to_convergence_per_position(
             {"UTIL": util_pool_phase4a},
             budget_config,
             league_settings,
         )["UTIL"]
+        # Phase 4c: Finalize UTIL pool player valuations
+        finalize_pool_player_valuations(results)
         hitter_pools["UTIL"] = results
         return hitter_pools
 
@@ -417,11 +421,15 @@ def hitter_pools_with_util_pool_converged_phase4b(
             pass
 
     # Not cached or corrupted - run expensive operation
+    from mtbl_valuations.engine.iteration import finalize_pool_player_valuations
+
     results = iterate_to_convergence_per_position(
         {"UTIL": util_pool_phase4a},
         budget_config,
         league_settings,
     )["UTIL"]
+    # Phase 4c: Finalize UTIL pool player valuations
+    finalize_pool_player_valuations(results)
     hitter_pools["UTIL"] = results
 
     # Save to cache
