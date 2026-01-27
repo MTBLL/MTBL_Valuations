@@ -9,9 +9,7 @@ import pandas as pd
 
 from mtbl_valuations.domain.models import (
     HitterPlayer,
-    HitterStats,
     PitcherPlayer,
-    PitcherStats,
     Player,
     PositionPool,
     Tier,
@@ -47,7 +45,7 @@ def _build_tier_map(pool: PositionPool) -> dict[str, Tier]:
     Returns:
         Dictionary mapping player IDs to their tier designation
     """
-    tier_map = {}
+    tier_map: dict[str, Tier] = {}
     for player in pool.rostered_players:
         tier_map[player.id] = "ROSTERED"
     for player in pool.replacement_players:
@@ -71,7 +69,7 @@ def _get_position_valuation(
             pos_val.total_z,
             pos_val.normalized_z,
             pos_val.dollar_values,
-            pos_val.total_dollars
+            pos_val.total_dollars,
         )
     else:
         # Fallback to top-level for single-position players
@@ -79,7 +77,7 @@ def _get_position_valuation(
             player.valuation.total_z,
             player.valuation.normalized_z,
             player.valuation.dollar_values,
-            player.valuation.total_dollars
+            player.valuation.total_dollars,
         )
 
 
@@ -109,7 +107,7 @@ def export_hitter_position_csv(
             valuation_total_z,
             valuation_normalized_z,
             valuation_dollar_values,
-            valuation_total_dollars
+            valuation_total_dollars,
         ) = _get_position_valuation(player, pool.position)
 
         row = {
@@ -170,7 +168,7 @@ def export_pitcher_pool_csv(
             valuation_total_z,
             valuation_normalized_z,
             valuation_dollar_values,
-            valuation_total_dollars
+            valuation_total_dollars,
         ) = _get_position_valuation(player, pool.position)
 
         row = {
@@ -201,9 +199,7 @@ def export_pitcher_pool_csv(
                 continue
 
             row[f"{cat}_z"] = round(valuation_normalized_z.get(cat, 0.0), 3)
-            row[f"{cat}_dollars"] = round(
-                valuation_dollar_values.get(cat, 0.0), 2
-            )
+            row[f"{cat}_dollars"] = round(valuation_dollar_values.get(cat, 0.0), 2)
 
         rows.append(row)
 
