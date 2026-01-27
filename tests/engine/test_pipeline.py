@@ -10,8 +10,14 @@ from mtbl_valuations.engine.budget import (
     allocate_position_budgets,
     calc_pool_dollars_per_z,
 )
-from mtbl_valuations.engine.iteration import iterate_to_convergence
-from mtbl_valuations.engine.pipeline import run_trp_valuation
+from mtbl_valuations.engine.iteration import (
+    iterate_to_convergence_global,
+    iterate_to_convergence_per_position,
+)
+from mtbl_valuations.engine.pipeline import (
+    run_trp_valuation,
+    validate_position_valuation_hydration,
+)
 from mtbl_valuations.engine.pools import (
     build_pitcher_pool,
     build_util_pool,
@@ -102,11 +108,10 @@ class TestPipelinePhase3RegularHitters:
         num_teams = league_settings["num_teams"]
         if num_dedupes > 0:
             print("  Re-iterating after dedupe...")
-            hitter_pools = iterate_to_convergence(
+            hitter_pools = iterate_to_convergence_global(
                 deduped,
                 budget_config,
                 league_settings,
-                track_z_per_pool=False,  # Now single-position mode
             )
 
             assert hitter_pools is not None
@@ -195,14 +200,13 @@ class TestPipelinePhase4Util:
         )
         # Phase 4b
         # Iterate UTIL pool with composite RLP baseline
-        # Use track_z_per_pool=True to avoid clobbering tier attributes of players
+        # Use per-position mode to avoid clobbering tier attributes of players
         # who remain in their original position pools
         print("  Iterating UTIL pool with composite RLP baseline...")
-        util_pool = iterate_to_convergence(
+        util_pool = iterate_to_convergence_per_position(
             {"UTIL": util_pool_phase4a},
             budget_config,
             league_settings,
-            track_z_per_pool=True,
         )["UTIL"]
 
         # Add UTIL to hitter pools
@@ -352,7 +356,7 @@ class TestBuildPitcherPoolsPhase6:
     ):
         # Phase 6b
         print("  Iterating SP pool to convergence...")
-        pitcher_pool = iterate_to_convergence(
+        pitcher_pool = iterate_to_convergence_global(
             sp_pool_phase6a, budget_config, league_settings
         )
         assert pitcher_pool is not None
@@ -399,7 +403,7 @@ class TestBuildPitcherPoolsPhase6:
     ):
         # Phase 6d
         print("  Iterating RP pool to convergence...")
-        pitcher_pool = iterate_to_convergence(
+        pitcher_pool = iterate_to_convergence_global(
             rp_pool_phase6c, budget_config, league_settings
         )
         assert pitcher_pool is not None
@@ -545,3 +549,51 @@ class TestPipelineValidationPhase9:
         # Capture and verify printed output
         captured = capsys.readouterr()
         assert "✓ All RLP Z-scores are near 0" in captured.out
+
+    def test_validate_position_valuation_hydration_warnings(self, capsys):
+        """Test validation warnings for missing/empty position valuations."""
+        from mtbl_valuations.domain.models import (
+            HitterStats,
+            Player,
+            PositionPool,
+            PositionValuation,
+        )
+
+        # Create test players with various issues (12 players to test truncation)
+        players = []
+        for i in range(12):
+            p = Player(
+                id=str(i),
+                name=f"Player {i}",
+                team="T",
+                positions=["SS"],
+                role="HITTER",
+                stats=HitterStats(pa=10, ab=10, r=5, hr=1, rbi=1, sbn=0, obp=0.3, slg=0.4),
+            )
+            # Half missing position valuation, half with empty dollar_values
+            if i % 2 == 0:
+                # Missing position valuation
+                pass
+            else:
+                # Empty dollar values
+                p.valuation.valuations_by_position["SS"] = PositionValuation(
+                    position="SS",
+                    normalized_z={},
+                    total_z=0.0,
+                    tier="ROSTERED",
+                    position_rank=0,
+                    dollar_values={},
+                )
+            players.append(p)
+
+        pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
+        pool.rostered_players = players
+        pool.replacement_players = []
+        pool.below_replacement = []
+
+        validate_position_valuation_hydration({"SS": pool})
+
+        captured = capsys.readouterr()
+        assert "⚠️  PositionValuation Hydration Warnings:" in captured.out
+        assert "Player 0" in captured.out
+        assert "... and 2 more" in captured.out  # 12 warnings, showing first 10

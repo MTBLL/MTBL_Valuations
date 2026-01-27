@@ -13,8 +13,10 @@ from mtbl_valuations.engine.budget import (
     calc_pool_dollars_per_z,
 )
 from mtbl_valuations.engine.iteration import (
-    assign_player_tiers,
-    iterate_to_convergence,
+    assign_player_tiers_global,
+    finalize_pool_player_valuations,
+    iterate_to_convergence_global,
+    iterate_to_convergence_per_position,
 )
 from mtbl_valuations.engine.pools import (
     assign_primary_position_from_pool,
@@ -23,7 +25,7 @@ from mtbl_valuations.engine.pools import (
     build_util_pool,
     dedupe_multi_position_players,
 )
-from mtbl_valuations.engine.valuation import distribute_player_dollars
+from mtbl_valuations.engine.valuation import distribute_player_dollars, distribute_pool_dollars
 from mtbl_valuations.io.exports import export_detailed_position_csvs
 from mtbl_valuations.io.loader import (
     load_batters,
@@ -38,30 +40,10 @@ from mtbl_valuations.io.writers import (
 )
 from mtbl_valuations.validation.checks import (
     validate_budget_balance,
+    validate_position_valuation_hydration,
     validate_rlp_z_scores,
     validate_tier_counts,
 )
-
-
-def validate_position_valuation_hydration(pools: dict[str, PositionPool]) -> None:
-    """Validate that rostered/replacement players have position-specific dollar values."""
-    warnings = []
-
-    for pos, pool in pools.items():
-        for player in pool.rostered_players + pool.replacement_players:
-            if pos not in player.valuation.valuations_by_position:
-                warnings.append(f"{player.name} in {pos} pool missing PositionValuation")
-            else:
-                pos_val = player.valuation.valuations_by_position[pos]
-                if not pos_val.dollar_values:
-                    warnings.append(f"{player.name} at {pos} has empty dollar_values")
-
-    if warnings:
-        print("\n⚠️  PositionValuation Hydration Warnings:")
-        for warning in warnings[:10]:  # Limit to first 10
-            print(f"  - {warning}")
-        if len(warnings) > 10:
-            print(f"  ... and {len(warnings) - 10} more")
 
 
 def run_trp_valuation(
@@ -122,7 +104,7 @@ def run_trp_valuation(
     print(f"  Relievers: {len(relievers)}")
 
     # ========================================================================
-    # Phase 3: Build position pools and iterate to convergence (multi-eligible)
+    # Phase 3: Build position pools and iterate to convergence
     # ========================================================================
     # Phase 3a
     print("\nPhase 3: Building hitter pools (multi-eligible)...")
@@ -138,11 +120,10 @@ def run_trp_valuation(
 
     # Phase 3b
     print("  Iterating hitter pools to convergence (per-pool tracking)...")
-    hitter_pools = iterate_to_convergence(
+    hitter_pools = iterate_to_convergence_per_position(
         hitter_pools,
         budget_config,
         league_settings,
-        track_z_per_pool=True,  # Store Z-scores per position
     )
 
     # Phase 3c
@@ -157,11 +138,10 @@ def run_trp_valuation(
     # Re-iterate after dedupe since pool composition changed
     if dedupe_changes > 0:
         print("  Re-iterating after dedupe...")
-        hitter_pools = iterate_to_convergence(
+        hitter_pools = iterate_to_convergence_global(
             hitter_pools,
             budget_config,
             league_settings,
-            track_z_per_pool=False,  # Now single-position mode
         )
 
     # ========================================================================
@@ -181,32 +161,18 @@ def run_trp_valuation(
     )
 
     # Phase 4b
-    # Iterate UTIL pool with composite RLP baseline
-    # Use track_z_per_pool=True to avoid clobbering tier attributes of players
-    # who remain in their original position pools
+    # Iterate UTIL pool
     print("  Iterating UTIL pool with composite RLP baseline...")
-    util_pool = iterate_to_convergence(
+    util_pool = iterate_to_convergence_per_position(
         {"UTIL": util_pool},
         budget_config,
         league_settings,
-        track_z_per_pool=True,
     )["UTIL"]
 
     # Phase 4c
-    # Assign primary positions and tiers for UTIL pool players
-    print("  Assigning UTIL players to UTIL position...")
-    assign_primary_position_from_pool(util_pool)
-
-    # Copy per-pool Z-scores to top-level for budget allocation
-    # UTIL was iterated with track_z_per_pool=True, so Z-scores are in valuations_by_position
-    for player in util_pool.rostered_players + util_pool.replacement_players + util_pool.below_replacement:
-        if "UTIL" in player.valuation.valuations_by_position:
-            util_val = player.valuation.valuations_by_position["UTIL"]
-            player.valuation.normalized_z = util_val.normalized_z
-            player.valuation.total_z = util_val.total_z
-
-    # Update tier attributes to match UTIL pool tiers (their primary position)
-    assign_player_tiers(util_pool, track_z_per_pool=False)
+    # Finalize UTIL pool player valuations (primary position, Z-scores, tiers)
+    print("  Finalizing UTIL pool player valuations...")
+    finalize_pool_player_valuations(util_pool)
 
     # Add UTIL to hitter pools
     # Note: UTIL players remain in their original position pools (for exports)
@@ -219,19 +185,7 @@ def run_trp_valuation(
 
     hitter_pools = allocate_position_budgets(hitter_pools, league_budget, budget_config)
     hitter_pools = calc_pool_dollars_per_z(hitter_pools)
-
-    # Distribute dollars to all hitter players
-    for pos, pool in hitter_pools.items():
-        for player in pool.rostered_players + pool.replacement_players:
-            dollar_values = distribute_player_dollars(
-                player, pool, store_in_position_valuation=True
-            )
-            total_dollars = sum(dollar_values.values())
-
-            # Store at top level if this is the player's primary position
-            if player.valuation.primary_position == pos:
-                player.valuation.dollar_values = dollar_values
-                player.valuation.total_dollars = total_dollars
+    distribute_pool_dollars(hitter_pools, store_per_position=True)
 
     # Validate position valuations are hydrated
     validate_position_valuation_hydration(hitter_pools)
@@ -253,7 +207,7 @@ def run_trp_valuation(
     }
     # Phase 6b
     print("  Iterating SP pool to convergence...")
-    sp_pool = iterate_to_convergence(sp_pool, budget_config, league_settings)
+    sp_pool = iterate_to_convergence_global(sp_pool, budget_config, league_settings)
 
     # Phase 6c
     rp_pool: dict[str, PositionPool] = {
@@ -268,7 +222,7 @@ def run_trp_valuation(
     }
     # Phase 6d
     print("  Iterating RP pool to convergence...")
-    rp_pool = iterate_to_convergence(rp_pool, budget_config, league_settings)
+    rp_pool = iterate_to_convergence_global(rp_pool, budget_config, league_settings)
 
     # ========================================================================
     # Phase 7: Allocate pitcher budgets
@@ -301,17 +255,12 @@ def run_trp_valuation(
     print("\nPhase 8: Calculating pitcher dollar values...")
     pitchers = sp_pool | rp_pool
 
+    # Assign primary positions for pitcher pools
     for _, pool in pitchers.items():
-        # Assign primary positions for this pitcher pool
         assign_primary_position_from_pool(pool)
 
-        for _, player in enumerate(pool.rostered_players + pool.replacement_players):
-            # Calculate dollar values for THIS position
-            dollar_values = distribute_player_dollars(player, pool)
-            total_dollars = sum(dollar_values.values())
-
-            player.valuation.dollar_values = dollar_values
-            player.valuation.total_dollars = total_dollars
+    # Distribute dollars to all pitcher players
+    distribute_pool_dollars(pitchers, store_per_position=False)
 
     # ========================================================================
     # Phase 9: Validate

@@ -209,12 +209,10 @@ role: string
 rostered_count: integer
 replacement_tier_count: integer
 total_budget: float
-dollars_per_z_R: float
-dollars_per_z_HR: float
-... ($/Z for each category)
-replacement_baseline_R: float
-replacement_baseline_HR: float
-... (RLP archetype stats)
+budget_<category>: float           // Budget allocated per category (e.g., budget_R, budget_HR)
+pool_total_z_<category>: float     // Sum of positive rostered Z-scores per category
+dollars_per_z_<category>: float    // Conversion rate (e.g., dollars_per_z_R, dollars_per_z_HR)
+replacement_baseline_<category>: float  // RLP archetype stats (e.g., replacement_baseline_R)
 ```
 
 **3. Hitters JSON** (`hitters.json`)
@@ -223,13 +221,26 @@ This should match the upstream batters schema and append a new stats.valuations 
 **4. Pitchers JSON** (`pitchers.json`)
 This should match the upstream pitchers schema and append a new stats.valuations object that captures all the z-scores and shekels that are league specific.  This JSON will feed the loader pipe with easy translation to postgres db.
 
+**5. Detailed Position CSVs** (e.g., `C.csv`, `SS.csv`, `UTIL.csv`)
+
+Per-position exports showing all rostered and replacement players for that position. These exports use the `GET_POSITION_VALUATION` helper to ensure data consistency:
+
+- **Multi-position players:** Show position-specific tier, Z-scores, and dollar values from `valuations_by_position[position]`
+- **Single-position players:** Fall back to top-level valuation
+
+This ensures exports are accurate. For example, Trevor Story might appear as:
+- `SS.csv`: tier=REPLACEMENT, total_z=-0.5, total_dollars=-$0.10
+- `UTIL.csv`: tier=ROSTERED, total_z=2.1, total_dollars=$17.00
+
+Both exports reflect his actual valuation at that specific position.
+
 ---
 
 ### Core Data Structures
 
-**Player (shared identity + computed fields)**
+**Player (shared identity + valuation fields)**
 
-This is the common “person” object. Every valuation entity references this, so you don’t duplicate identity metadata across hitter/pitcher types.
+This is the common "person" object. Every valuation entity references this, so you don't duplicate identity metadata across hitter/pitcher types.
 
 ```
 {
@@ -239,16 +250,37 @@ This is the common “person” object. Every valuation entity references this, 
   positions: string[]
   role: "HITTER" | "SP" | "RP"
 
-  // everything TRP computes lives here so it stays identical across hitter/pitcher flows
-  computed: {
+  // Everything TRP computes lives in the valuation object
+  // Multi-position players store valuations per position + top-level (primary)
+  valuation: {
     primary_position: string
-    raw_z: { [category]: float }
     normalized_z: { [category]: float }
     total_z: float
     dollar_values: { [category]: float }
     total_dollars: float
     tier: "ROSTERED" | "REPLACEMENT" | "BELOW_REPLACEMENT"
+
+    // Position-specific valuations (for multi-position players)
+    valuations_by_position: {
+      [position]: PositionValuation
+    }
   }
+}
+```
+
+**PositionValuation (position-specific valuation data)**
+
+Multi-position players are valued at each eligible position during iteration. Each position's valuation is stored separately to enable position-specific exports and dollar calculations.
+
+```
+{
+  position: string
+  normalized_z: { [category]: float }
+  total_z: float
+  dollar_values: { [category]: float }
+  total_dollars: float
+  tier: "ROSTERED" | "REPLACEMENT" | "BELOW_REPLACEMENT"
+  position_rank: integer  // rank within this position pool (used for deduplication)
 }
 ```
 
@@ -315,12 +347,13 @@ Design note: we keep a single shared `Player` identity object, but hitters and p
   replacement_players: Player[]
   rostered_tier_means: { [category]: float }
   rostered_tier_stdevs: { [category]: float }
-  rlp_archetype: { [category]: float }
-  rlp_raw_z_avg: { [category]: float }
+  rlp_archetype: { [category]: float }        // Average raw stats of replacement tier
+  rlp_raw_z_avg: { [category]: float }        // Average raw Z-scores of replacement tier
   category_budgets: { [category]: float }
   dollars_per_z: { [category]: float }
   total_pool_z: { [category]: float }
   production_share: { [category]: float }
+  z_baseline_shift: { [category]: float }     // Shift to ensure rostered players get positive dollars
 }
 ```
 
@@ -344,80 +377,75 @@ Design note: we keep a single shared `Player` identity object, but hitters and p
 
 ### Core Functions
 
-**ASSIGN_PRIMARY_POSITIONS(players, settings)**
+**Why No Upfront Position Assignment?**
 
-Multi-position players create a challenge: where do you value them? A player eligible at 2B and SS could anchor either position. TRP assigns each player to their most valuable position—the scarcest one where they'd be rostered.
+*IMPORTANT:* TRP does **not** assign primary positions before iteration. Instead, it uses a multi-eligibility approach:
 
-This function processes positions from scarcest to deepest, assigning players to maximize positional value.
+1. **Phase 3a:** Players appear in ALL eligible position pools simultaneously
+2. **Phase 3b:** Each pool values players independently, storing position-specific Z-scores
+3. **Phase 3c:** Dedupe step assigns each player to their best-ranked position
+4. **Phase 3d:** Re-iterate with players in their final position
 
-```
-ASSIGN_PRIMARY_POSITIONS(players, settings):
-    // Sort positions by scarcity (fewest roster slots first)
-    position_order = SORT_BY(settings.roster_slots, ascending)
-    
-    assigned = {}
-    
-    FOR each position IN position_order:
-        eligible = FILTER(players, position IN player.positions AND player.id NOT IN assigned)
-        slots = settings.roster_slots[position] * settings.num_teams
-        
-        // Sort by composite metric (wRC+ for hitters, FIP for pitchers)
-        eligible = SORT_BY(eligible, composite_metric, descending)
-        
-        // Assign top N players to this position
-        FOR i = 0 TO slots + (slots * 0.5):  // Include replacement tier buffer
-            IF i < LENGTH(eligible):
-                assigned[eligible[i].id] = position
-                eligible[i].computed.primary_position = position
-    
-    RETURN players
-```
+This is more accurate than upfront assignment because:
+- Players are valued at every position they're eligible for
+- Natural ranking emerges (best SS might also be best UTIL)
+- Handles edge cases (rostered at one position, replacement at another)
 
 ---
 
-**BUILD_POSITION_POOLS(players, settings, role)**
+**BUILD_POSITION_POOLS(players, settings, role, use_eligibility=False)**
 
 This function creates the initial tier structure for each position. The rostered tier is straightforward—top N players by composite metric. The replacement tier uses a percentage band (typically 3%) below the last rostered player, expanding if needed to meet the minimum tier size.
 
 The percentage band approach (from Part 2) ensures the replacement tier adapts to each position's talent distribution rather than assuming a fixed size.
 
+**Key Parameter:** `use_eligibility` (default False)
+- When True: Players appear in ALL eligible position pools (multi-eligibility mode for Phase 3a)
+- When False: Players only appear in their assigned primary position (single-position mode)
+
 ```
-BUILD_POSITION_POOLS(players, settings, role):
+BUILD_POSITION_POOLS(players, settings, role, use_eligibility=False):
     pools = []
     categories = GET_CATEGORIES(role, settings)
-    
+
     FOR each position IN GET_POSITIONS(role, settings):
         pool = NEW PositionPool
         pool.position = position
         pool.role = role
         pool.roster_slots = settings.roster_slots[position] * settings.num_teams
-        
-        // Get players assigned to this position
-        position_players = FILTER(players, primary_position == position)
+
+        // Get players for this position
+        IF use_eligibility:
+            // Multi-eligibility mode: include all eligible players
+            position_players = FILTER(players, position IN player.positions)
+        ELSE:
+            // Single-position mode: only primary position
+            position_players = FILTER(players, primary_position == position)
+
         position_players = SORT_BY(position_players, composite_metric, descending)
-        
+
         // Initial tier assignment
         pool.rostered_players = position_players[0 : pool.roster_slots]
-        
+
         // Replacement tier: within X% of last rostered player
         last_rostered_metric = pool.rostered_players[-1].composite_metric
         threshold = last_rostered_metric * (1 - budget_config.replacement_tier_pct)
-        
+
         replacement_candidates = FILTER(
             position_players[pool.roster_slots :],
             composite_metric >= threshold
         )
-        
+
         // Enforce minimum tier size
         IF LENGTH(replacement_candidates) < budget_config.min_replacement_tier_size:
             replacement_candidates = position_players[
                 pool.roster_slots : pool.roster_slots + budget_config.min_replacement_tier_size
             ]
-        
+
         pool.replacement_players = replacement_candidates
-        
+
         pools.APPEND(pool)
-    
+
     RETURN pools
 ```
 
@@ -482,62 +510,180 @@ BUILD_UTIL_POOL(hitter_pools, pure_dh_players, settings):
 
 ---
 
-**ITERATE_TO_CONVERGENCE(pools, budget_config)**
+**ITERATE_TO_CONVERGENCE(pools, budget_config, track_z_per_pool=False)**
 
 This is the heart of Part 3's methodology. The initial tier assignment uses a composite metric (wRC+), but fantasy leagues score categories separately. A player ranked 8th by wRC+ might rank 13th by total Z if his profile is lopsided.
 
 The iteration loop recalculates Z-scores against each iteration's rostered tier, re-ranks players, and reassigns tiers until membership stabilizes. Typically converges in 2–3 iterations.
 
+**Key Parameter:** `track_z_per_pool` (default False)
+- When True: Store Z-scores in `player.valuation.valuations_by_position[pool.position]` (enables multi-position valuations)
+- When False: Store Z-scores in top-level `player.valuation` (standard single-position mode)
+
 ```
-ITERATE_TO_CONVERGENCE(pools, budget_config):
+ITERATE_TO_CONVERGENCE(pools, budget_config, track_z_per_pool=False):
     FOR iteration = 1 TO budget_config.max_iterations:
         changes = 0
-        
+
         FOR each pool IN pools:
             // Step 1: Calculate rostered tier mean and stdev per category
             pool.rostered_tier_means = CALC_MEANS(pool.rostered_players, categories)
             pool.rostered_tier_stdevs = CALC_STDEVS(pool.rostered_players, categories)
-            
+
             // Step 2: Calculate raw Z-scores for all players
             all_pool_players = pool.rostered_players + pool.replacement_players + pool.below_replacement
             FOR each player IN all_pool_players:
-                player.computed.raw_z = CALC_RAW_Z(player, pool)
-            
-            // Step 3: Calculate RLP average raw Z (the baseline shift)
-            pool.rlp_raw_z_avg = CALC_MEANS(pool.replacement_players, raw_z)
-            
-            // Step 4: Normalize Z-scores (subtract RLP average)
-            FOR each player IN all_pool_players:
-                player.computed.normalized_z = CALC_NORMALIZED_Z(player, pool)
-                player.computed.total_z = SUM(player.computed.normalized_z)
-            
-            // Step 5: Re-rank by total Z
+                raw_z = CALC_RAW_Z(player, pool)
+
+                // Step 3: Calculate RLP average raw Z (the baseline shift)
+                pool.rlp_raw_z_avg = CALC_MEANS(pool.replacement_players, raw_z)
+
+                // Step 4: Normalize Z-scores (subtract RLP average)
+                normalized_z = CALC_NORMALIZED_Z(raw_z, pool.rlp_raw_z_avg)
+                total_z = SUM(normalized_z)
+
+                // Step 5: Store Z-scores based on tracking mode
+                IF track_z_per_pool:
+                    // Create or update position-specific valuation
+                    IF pool.position NOT IN player.valuation.valuations_by_position:
+                        player.valuation.valuations_by_position[pool.position] = NEW PositionValuation
+
+                    pos_val = player.valuation.valuations_by_position[pool.position]
+                    pos_val.position = pool.position
+                    pos_val.normalized_z = normalized_z
+                    pos_val.total_z = total_z
+                    pos_val.position_rank = INDEX_OF(player, all_pool_players)
+                ELSE:
+                    // Store in top-level valuation
+                    player.valuation.normalized_z = normalized_z
+                    player.valuation.total_z = total_z
+
+            // Step 6: Re-rank by total Z
             all_pool_players = SORT_BY(all_pool_players, total_z, descending)
-            
-            // Step 6: Reassign tiers based on new ranking
+
+            // Step 7: Reassign tiers based on new ranking
             new_rostered = all_pool_players[0 : pool.roster_slots]
-            
+
             // Check for changes
             old_ids = SET(player.id FOR player IN pool.rostered_players)
             new_ids = SET(player.id FOR player IN new_rostered)
             IF old_ids != new_ids:
                 changes += 1
-            
+
             // Update tiers
             pool.rostered_players = new_rostered
             pool.replacement_players = REBUILD_REPLACEMENT_TIER(all_pool_players, pool)
-            
+
             // Mark player tiers
             FOR each player IN pool.rostered_players:
-                player.computed.tier = "ROSTERED"
+                IF track_z_per_pool:
+                    player.valuation.valuations_by_position[pool.position].tier = "ROSTERED"
+                ELSE:
+                    player.valuation.tier = "ROSTERED"
+
             FOR each player IN pool.replacement_players:
-                player.computed.tier = "REPLACEMENT"
-        
+                IF track_z_per_pool:
+                    player.valuation.valuations_by_position[pool.position].tier = "REPLACEMENT"
+                ELSE:
+                    player.valuation.tier = "REPLACEMENT"
+
         // Check convergence
         IF changes <= budget_config.convergence_threshold:
             BREAK
-    
+
     RETURN pools
+```
+
+---
+
+**DEDUPE_MULTI_POSITION_PLAYERS(pools, replacement_tier_pct, min_replacement_tier_size)**
+
+After multi-eligibility iteration, players who appear in multiple position pools must be assigned to exactly one position. This function implements the deduplication logic.
+
+**Strategy:**
+1. For each multi-position player, find their best position (prefer ROSTERED tier, then best position_rank)
+2. Assign that as their primary position
+3. Remove them from all other pools
+4. Slide players up in affected pools to maintain roster sizes
+
+```
+DEDUPE_MULTI_POSITION_PLAYERS(pools, replacement_tier_pct, min_replacement_tier_size):
+    changes = 0
+
+    // Build map of player_id -> list of (pool, tier, rank)
+    player_positions = {}
+    FOR each pool IN pools:
+        FOR each player IN pool.rostered_players + pool.replacement_players:
+            IF player.id NOT IN player_positions:
+                player_positions[player.id] = []
+
+            pos_val = player.valuation.valuations_by_position[pool.position]
+            player_positions[player.id].APPEND({
+                pool: pool,
+                tier: pos_val.tier,
+                rank: pos_val.position_rank
+            })
+
+    // Process each multi-position player
+    FOR each player_id, positions IN player_positions:
+        IF LENGTH(positions) > 1:
+            // Find best position: ROSTERED tier first, then best rank
+            best = FIND_BEST_POSITION(positions)  // ROSTERED > REPLACEMENT, then lowest rank
+
+            // Mark as primary position
+            player = GET_PLAYER(player_id)
+            player.valuation.primary_position = best.pool.position
+
+            // Copy best position valuation to top-level
+            best_pos_val = player.valuation.valuations_by_position[best.pool.position]
+            player.valuation.tier = best_pos_val.tier
+
+            // Remove from non-primary pools
+            FOR each pos IN positions WHERE pos.pool != best.pool:
+                REMOVE player FROM pos.pool.rostered_players
+                REMOVE player FROM pos.pool.replacement_players
+                changes += 1
+
+    // Refill tiers after removing players
+    FOR each pool IN pools:
+        // Slide players up to maintain roster_slots size
+        all_eligible = GET_ALL_ELIGIBLE_PLAYERS_FOR_POSITION(pool.position)
+        all_eligible = SORT_BY(all_eligible, composite_metric, descending)
+
+        // Rebuild rostered tier
+        pool.rostered_players = all_eligible[0 : pool.roster_slots]
+
+        // Rebuild replacement tier with percentage band
+        IF LENGTH(pool.rostered_players) > 0:
+            last_rostered_metric = pool.rostered_players[-1].composite_metric
+            threshold = last_rostered_metric * (1 - replacement_tier_pct)
+
+            replacement_candidates = FILTER(
+                all_eligible[pool.roster_slots :],
+                composite_metric >= threshold
+            )
+
+            IF LENGTH(replacement_candidates) < min_replacement_tier_size:
+                replacement_candidates = all_eligible[
+                    pool.roster_slots : pool.roster_slots + min_replacement_tier_size
+                ]
+
+            pool.replacement_players = replacement_candidates
+
+    RETURN pools, changes
+```
+
+**Helper Function:**
+```
+FIND_BEST_POSITION(positions):
+    // Prefer ROSTERED tier over REPLACEMENT
+    rostered_positions = FILTER(positions, tier == "ROSTERED")
+    IF LENGTH(rostered_positions) > 0:
+        // Multiple ROSTERED: pick best rank (lowest number)
+        RETURN MIN_BY(rostered_positions, rank)
+
+    // All REPLACEMENT: pick best rank
+    RETURN MIN_BY(positions, rank)
 ```
 
 ---
@@ -574,19 +720,19 @@ CALC_RAW_Z(player, pool):
 
 ---
 
-**CALC_NORMALIZED_Z(player, pool)**
+**CALC_NORMALIZED_Z(raw_z, rlp_raw_z_avg)**
 
 Raw Z-scores are relative to the rostered tier average—not replacement level. To measure value *above replacement*, we subtract the RLP tier's average raw Z in each category.
 
 This is the baseline shift from Part 3: a rostered player who's average in a category gets raw Z = 0, but if the RLP tier averages -1.5 in that category, the rostered player's normalized Z becomes +1.5.
 
 ```
-CALC_NORMALIZED_Z(player, pool):
+CALC_NORMALIZED_Z(raw_z, rlp_raw_z_avg):
     normalized_z = {}
-    
-    FOR each category IN player.computed.raw_z:
-        normalized_z[category] = player.computed.raw_z[category] - pool.rlp_raw_z_avg[category]
-    
+
+    FOR each category IN raw_z:
+        normalized_z[category] = raw_z[category] - rlp_raw_z_avg[category]
+
     RETURN normalized_z
 ```
 
@@ -708,22 +854,75 @@ CALC_DOLLARS_PER_Z(pools):
 
 ---
 
-**CALC_PLAYER_DOLLARS(player, pool)**
+**DISTRIBUTE_PLAYER_DOLLARS(player, pool, store_in_position_valuation=False)**
 
 The final step: multiply each player's normalized Z by the $/Z rate for their position-category. Sum across categories for total dollar value.
 
 Negative Z-scores produce negative dollar contributions—a player who hurts you in a category is penalized accordingly.
 
+**Key Parameter:** `store_in_position_valuation` (default False)
+- When True: Read Z-scores from `valuations_by_position[pool.position]` and store dollars back there (enables position-specific dollar values)
+- When False: Use top-level Z-scores and return dollars without storing
+
+**Baseline Shift:** For rostered players, applies `z_baseline_shift` to ensure no negative total dollars.
+
 ```
-CALC_PLAYER_DOLLARS(player, pool):
+DISTRIBUTE_PLAYER_DOLLARS(player, pool, store_in_position_valuation=False):
     dollar_values = {}
-    
-    FOR each category IN player.computed.normalized_z:
-        z = player.computed.normalized_z[category]
+
+    // Determine which Z-scores to use
+    IF store_in_position_valuation AND pool.position IN player.valuation.valuations_by_position:
+        normalized_z = player.valuation.valuations_by_position[pool.position].normalized_z
+    ELSE:
+        normalized_z = player.valuation.normalized_z
+
+    // Calculate dollars per category
+    FOR each category IN normalized_z:
+        z_value = normalized_z[category]
         rate = pool.dollars_per_z[category]
-        dollar_values[category] = z * rate
-    
+
+        // Apply baseline shift for rostered players (handles negative Z)
+        IF player IN pool.rostered_players:
+            baseline_shift = pool.z_baseline_shift[category]
+            adjusted_z = MAX(0, z_value + baseline_shift)
+        ELSE:
+            adjusted_z = z_value
+
+        dollar_values[category] = adjusted_z * rate
+
+    total_dollars = SUM(dollar_values)
+
+    // Store in position valuation if requested
+    IF store_in_position_valuation AND pool.position IN player.valuation.valuations_by_position:
+        player.valuation.valuations_by_position[pool.position].dollar_values = dollar_values
+        player.valuation.valuations_by_position[pool.position].total_dollars = total_dollars
+
     RETURN dollar_values
+```
+
+---
+
+**CALC_BASELINE_SHIFT(pool)**
+
+Calculates the baseline shift needed to ensure all rostered players have positive total dollars. For each category, finds the minimum Z-score in the rostered tier. If negative, shifts all Z-scores up by that amount during dollar distribution.
+
+This preserves relative differences while preventing negative total valuations for rosterable players.
+
+```
+CALC_BASELINE_SHIFT(pool):
+    pool.z_baseline_shift = {}
+
+    FOR each category IN pool.rostered_tier_means:
+        // Find minimum Z-score in rostered tier
+        min_z = MIN(player.valuation.normalized_z[category] FOR player IN pool.rostered_players)
+
+        // If any rostered player has negative Z, shift everything up
+        IF min_z < 0:
+            pool.z_baseline_shift[category] = -min_z
+        ELSE:
+            pool.z_baseline_shift[category] = 0
+
+    RETURN pool
 ```
 
 ---
@@ -747,16 +946,45 @@ ELSE IF role == "RP":
 
 **CALC_MEANS(players, field)**
 ```
-values = [player.stats[field] OR player.computed[field] FOR player IN players]
+values = [player.stats[field] OR player.valuation[field] FOR player IN players]
 RETURN SUM(values) / LENGTH(values)
 ```
 
 **CALC_STDEVS(players, field)**
 ```
-values = [player.stats[field] OR player.computed[field] FOR player IN players]
+values = [player.stats[field] OR player.valuation[field] FOR player IN players]
 mean = CALC_MEANS(players, field)
 variance = SUM((v - mean)^2 FOR v IN values) / LENGTH(values)
 RETURN SQRT(variance)
+```
+
+**GET_POSITION_VALUATION(player, position)**
+
+Helper function for exports. Returns position-specific valuation data if available, otherwise falls back to top-level valuation. This ensures position-specific CSVs show accurate tier/Z/dollar data for multi-position players.
+
+```
+GET_POSITION_VALUATION(player, position):
+    """
+    Returns: (total_z, normalized_z, dollar_values, total_dollars, tier)
+    """
+    IF position IN player.valuation.valuations_by_position:
+        pos_val = player.valuation.valuations_by_position[position]
+        RETURN (
+            pos_val.total_z,
+            pos_val.normalized_z,
+            pos_val.dollar_values,
+            pos_val.total_dollars,
+            pos_val.tier
+        )
+    ELSE:
+        // Fallback for single-position players
+        RETURN (
+            player.valuation.total_z,
+            player.valuation.normalized_z,
+            player.valuation.dollar_values,
+            player.valuation.total_dollars,
+            player.valuation.tier
+        )
 ```
 
 ---
@@ -769,75 +997,346 @@ Before outputting, validate:
 2. **No Orphan Players:** Every player with projections is assigned to exactly one position pool
 3. **Tier Consistency:** Rostered tier size equals roster slots × num teams for each position
 4. **Z-Score Sanity:** RLP players should have total normalized Z near 0
-5. **Dollar Sanity:** No rostered player should have negative total dollars (below replacement should be rare)
+5. **Dollar Sanity:** No rostered player should have negative total dollars (baseline shift prevents this)
+6. **Position Valuation Hydration:** All rostered/replacement players in hitter pools must have position-specific dollar values in `valuations_by_position[position]`
 
 ---
 
 ### Control Flow
 
-Putting it all together—the complete pipeline from raw projections to dollar values:
+Putting it all together—the complete 10-phase pipeline from raw projections to dollar values. Key innovations: multi-eligibility iteration (Phase 3), position-specific dollar hydration (Phase 5), and baseline shift for negative Z-scores.
 
 ```
 MAIN():
+    // ========================================================================
     // Phase 1: Initialize
-    projections = LOAD_PROJECTIONS("projections.csv")
-    settings = LOAD_SETTINGS("league_settings.json")
-    budget_config = LOAD_BUDGET_CONFIG("budget_config.json")
-    
-    // Phase 2: Assign primary positions (scarcity-first allocation)
-    players = ASSIGN_PRIMARY_POSITIONS(projections, settings)
-    
-    // Phase 3: Split by role
-    hitters = FILTER(players, role == "HITTER")
-    pure_dh_players = FILTER(hitters, positions == ["DH"])
-    starters = FILTER(players, role == "SP")
-    relievers = FILTER(players, role == "RP")
-    
-    // Phase 4: Build position pools and iterate to convergence
-    hitter_pools = BUILD_POSITION_POOLS(hitters, settings, "HITTER")
-    hitter_pools = ITERATE_TO_CONVERGENCE(hitter_pools, budget_config)
-    
-    // Phase 5: Build UTIL pool from replacement-tier players + pure DHs
-    // This must happen AFTER position pools converge so we know who's below replacement
-    util_pool = BUILD_UTIL_POOL(hitter_pools, pure_dh_players, settings)
-    util_pool = ITERATE_TO_CONVERGENCE([util_pool], budget_config)[0]
-    hitter_pools.APPEND(util_pool)
-    
-    // Phase 6: Build pitcher pools
-    sp_pool = BUILD_SINGLE_POOL(starters, settings, "SP")
-    sp_pool = ITERATE_TO_CONVERGENCE([sp_pool], budget_config)[0]
-    
-    rp_pool = BUILD_SINGLE_POOL(relievers, settings, "RP")
-    rp_pool = ITERATE_TO_CONVERGENCE([rp_pool], budget_config)[0]
-    
-    // Phase 7: Calculate league budget structure
-    league_budget = CALC_LEAGUE_BUDGET(settings, budget_config)
-    
-    // Phase 8: Allocate category budgets to positions
+    // ========================================================================
+    hitter_players = LOAD_BATTERS(batters_file)
+    pitcher_players = LOAD_PITCHERS(pitchers_file)
+    league_settings = LOAD_LEAGUE_SETTINGS(league_file)
+    budget_config = LOAD_BUDGET_CONFIG(budget_config_file)
+    league_budget = CALC_LEAGUE_BUDGET(league_settings, budget_config)
+
+    // ========================================================================
+    // Phase 2: Split by role
+    // ========================================================================
+    hitters = [hp.player FOR hp IN hitter_players]
+
+    // Identify pure DH players (only DH/UTIL eligibility)
+    pure_dh_players = FILTER(hitters, positions SUBSET_OF {"DH", "UTIL"})
+    regular_hitters = FILTER(hitters, NOT IN pure_dh_players)
+
+    starters = [pp.player FOR pp IN pitcher_players IF pp.player.role == "SP"]
+    relievers = [pp.player FOR pp IN pitcher_players IF pp.player.role == "RP"]
+
+    // ========================================================================
+    // Phase 3: Build hitter pools (multi-eligible with deduplication)
+    // ========================================================================
+
+    // Phase 3a: Build pools with multi-eligibility
+    // Players appear in ALL eligible position pools simultaneously
+    hitter_pools = BUILD_POSITION_POOLS(
+        regular_hitters,
+        roster_slots,
+        num_teams,
+        "HITTER",
+        use_eligibility=True  // Multi-eligibility mode
+    )
+
+    // Phase 3b: Iterate with per-pool Z-score tracking
+    // Stores position-specific valuations in valuations_by_position
+    hitter_pools = ITERATE_TO_CONVERGENCE(
+        hitter_pools,
+        budget_config,
+        track_z_per_pool=True  // Store Z-scores per position
+    )
+
+    // Phase 3c: Deduplicate multi-position players
+    // Assigns each player to their best-ranked position
+    hitter_pools, dedupe_changes = DEDUPE_MULTI_POSITION_PLAYERS(
+        hitter_pools,
+        budget_config.replacement_tier_pct,
+        budget_config.min_replacement_tier_size
+    )
+
+    // Phase 3d: Re-iterate after dedupe (if changes occurred)
+    // Now single-position mode since players are assigned
+    IF dedupe_changes > 0:
+        hitter_pools = ITERATE_TO_CONVERGENCE(
+            hitter_pools,
+            budget_config,
+            track_z_per_pool=False  // Standard single-position mode
+        )
+
+    // ========================================================================
+    // Phase 4: Build UTIL pool from stabilized pools
+    // ========================================================================
+
+    // Phase 4a: Build UTIL pool from replacement-tier players + pure DHs
+    // Must happen AFTER position pools converge
+    util_pool = BUILD_UTIL_POOL(
+        hitter_pools,  // Use converged pools
+        pure_dh_players,
+        roster_slots,
+        num_teams,
+        budget_config.replacement_tier_pct,
+        budget_config.min_replacement_tier_size
+    )
+
+    // Phase 4b: Iterate UTIL pool with composite RLP baseline
+    // Use track_z_per_pool to preserve original position valuations
+    util_pool = ITERATE_TO_CONVERGENCE(
+        {"UTIL": util_pool},
+        budget_config,
+        track_z_per_pool=True  // Preserve position-specific valuations
+    )["UTIL"]
+
+    // Phase 4c: Assign primary positions and tiers for UTIL players
+    ASSIGN_PRIMARY_POSITION_FROM_POOL(util_pool)
+
+    // Copy UTIL valuations to top-level for budget allocation
+    FOR each player IN util_pool.rostered_players + util_pool.replacement_players:
+        IF "UTIL" IN player.valuation.valuations_by_position:
+            util_val = player.valuation.valuations_by_position["UTIL"]
+            player.valuation.normalized_z = util_val.normalized_z
+            player.valuation.total_z = util_val.total_z
+
+    // Update tier attributes to match UTIL pool
+    ASSIGN_PLAYER_TIERS(util_pool, track_z_per_pool=False)
+
+    // Add UTIL to hitter pools
+    hitter_pools["UTIL"] = util_pool
+
+    // ========================================================================
+    // Phase 5: Allocate hitter budgets + distribute dollars
+    // ========================================================================
+
+    // Allocate category budgets based on production share
     hitter_pools = ALLOCATE_POSITION_BUDGETS(hitter_pools, league_budget, budget_config)
+
+    // Calculate $/Z conversion rates
+    hitter_pools = CALC_POOL_DOLLARS_PER_Z(hitter_pools)
+
+    // Calculate baseline shift to handle negative Z-scores
+    hitter_pools = CALC_BASELINE_SHIFT(hitter_pools)
+
+    // Distribute dollars to all hitter players
+    // store_in_position_valuation=True enables position-specific dollar values
+    FOR each pos, pool IN hitter_pools:
+        FOR each player IN pool.rostered_players + pool.replacement_players:
+            dollar_values = DISTRIBUTE_PLAYER_DOLLARS(
+                player,
+                pool,
+                store_in_position_valuation=True  // Store in valuations_by_position[pos]
+            )
+
+            // Store at top-level if this is player's primary position
+            IF player.valuation.primary_position == pos:
+                player.valuation.dollar_values = dollar_values
+                player.valuation.total_dollars = SUM(dollar_values)
+
+    // Validate position valuations are hydrated
+    VALIDATE_POSITION_VALUATION_HYDRATION(hitter_pools)
+
+    // ========================================================================
+    // Phase 6: Build pitcher pools
+    // ========================================================================
+
+    // Phase 6a: Build SP pool
+    sp_pool = BUILD_PITCHER_POOL(
+        starters,
+        roster_slots,
+        num_teams,
+        "SP",
+        budget_config.replacement_tier_pct,
+        budget_config.min_replacement_tier_size
+    )
+
+    // Phase 6b: Iterate SP pool
+    sp_pool = ITERATE_TO_CONVERGENCE({"SP": sp_pool}, budget_config)["SP"]
+
+    // Phase 6c: Build RP pool
+    rp_pool = BUILD_PITCHER_POOL(
+        relievers,
+        roster_slots,
+        num_teams,
+        "RP",
+        budget_config.replacement_tier_pct,
+        budget_config.min_replacement_tier_size
+    )
+
+    // Phase 6d: Iterate RP pool
+    rp_pool = ITERATE_TO_CONVERGENCE({"RP": rp_pool}, budget_config)["RP"]
+
+    // ========================================================================
+    // Phase 7: Allocate pitcher budgets
+    // ========================================================================
+
     sp_pool = ALLOCATE_POOL_BUDGET(sp_pool, league_budget.sp_budget, budget_config.sp_category_weights)
     rp_pool = ALLOCATE_POOL_BUDGET(rp_pool, league_budget.rp_budget, budget_config.rp_category_weights)
-    
-    // Phase 9: Convert Z-scores to dollars
-    hitter_pools = CALC_DOLLARS_PER_Z(hitter_pools)
-    sp_pool = CALC_DOLLARS_PER_Z([sp_pool])[0]
-    rp_pool = CALC_DOLLARS_PER_Z([rp_pool])[0]
-    
-    // Phase 10: Value each player
-    FOR each pool IN [hitter_pools..., sp_pool, rp_pool]:
+
+    sp_pool = CALC_POOL_DOLLARS_PER_Z(sp_pool)
+    rp_pool = CALC_POOL_DOLLARS_PER_Z(rp_pool)
+
+    sp_pool = CALC_BASELINE_SHIFT(sp_pool)
+    rp_pool = CALC_BASELINE_SHIFT(rp_pool)
+
+    // ========================================================================
+    // Phase 8: Distribute pitcher dollars
+    // ========================================================================
+
+    FOR each pool IN [sp_pool, rp_pool]:
+        // Assign primary positions
+        ASSIGN_PRIMARY_POSITION_FROM_POOL(pool)
+
+        // Distribute dollars (pitchers don't need position-specific storage)
         FOR each player IN pool.rostered_players + pool.replacement_players:
-            player.computed.dollar_values = CALC_PLAYER_DOLLARS(player, pool)
-            player.computed.total_dollars = SUM(player.computed.dollar_values)
-    
-    // Phase 11: Validate and normalize
-    total_allocated = SUM(all player.computed.total_dollars WHERE tier == "ROSTERED")
-    IF total_allocated != league_budget.total:
-        NORMALIZE_TO_BUDGET(all_players, league_budget.total)
-    
-    // Phase 12: Output
-    WRITE_VALUATIONS("valuations.csv", all_players)
-    WRITE_POSITION_SUMMARY("position_summary.csv", all_pools)
+            dollar_values = DISTRIBUTE_PLAYER_DOLLARS(player, pool)
+            player.valuation.dollar_values = dollar_values
+            player.valuation.total_dollars = SUM(dollar_values)
+
+    // ========================================================================
+    // Phase 9: Validate
+    // ========================================================================
+
+    all_pools = hitter_pools + sp_pool + rp_pool
+
+    VALIDATE_BUDGET_BALANCE(all_pools, league_budget)
+    VALIDATE_TIER_COUNTS(all_pools, roster_slots, num_teams)
+    VALIDATE_RLP_Z_SCORES(all_pools)
+    VALIDATE_POSITION_VALUATION_HYDRATION(hitter_pools)
+
+    // ========================================================================
+    // Phase 10: Output
+    // ========================================================================
+
+    WRITE_VALUATIONS_CSV(output_dir / "valuations.csv", all_pools)
+    WRITE_POSITION_SUMMARY_CSV(output_dir / "position_summary.csv", all_pools)
+    WRITE_PLAYER_JSON(output_dir / "hitters.json", batters_data, hitter_pools)
+    WRITE_PLAYER_JSON(output_dir / "pitchers.json", pitchers_data, sp_pool + rp_pool)
+
+    // Export detailed position CSVs using GET_POSITION_VALUATION helper
+    EXPORT_DETAILED_POSITION_CSVS(hitter_pools, sp_pool, rp_pool, output_dir)
 ```
+
+---
+
+### Why This Architecture? Design Decisions Explained
+
+This section explains the key architectural decisions that differentiate the implementation from simpler approaches.
+
+**1. Why multi-eligibility + dedupe instead of upfront position assignment?**
+
+*Problem:* A player eligible at 2B, SS, and UTIL could be the best at any of those positions. Assigning them upfront to their "primary" position misses nuance.
+
+*Solution:* Multi-eligibility iteration (Phase 3a-3c):
+- Phase 3a: Players appear in ALL eligible position pools
+- Phase 3b: Each pool values them independently
+- Phase 3c: After convergence, assign to their best-ranked position
+
+*Benefits:*
+- More accurate: values players at every position they're eligible for
+- Natural ranking: best SS might also be best UTIL—let iteration decide
+- Handles edge cases: player rostered at one position, replacement at another
+
+*Example:* Trevor Story might be:
+- 11th-best SS (replacement tier at SS)
+- 9th-best UTIL (rostered tier at UTIL)
+
+Dedupe assigns him to UTIL, but preserves his SS valuation for exports.
+
+---
+
+**2. Why track_z_per_pool flag in ITERATE_TO_CONVERGENCE?**
+
+*Problem:* During multi-eligibility iteration, we need to store Z-scores for EACH position a player is eligible at—not just overwrite with the last pool processed.
+
+*Solution:* `track_z_per_pool=True` stores valuations in `player.valuation.valuations_by_position[position]` instead of overwriting top-level valuation.
+
+*Benefits:*
+- Enables simultaneous valuation at multiple positions
+- Preserves position-specific Z-scores for dedupe logic
+- Allows UTIL iteration without clobbering original position tiers
+
+*When to use:*
+- True: Multi-eligibility mode (Phase 3b, Phase 4b)
+- False: Single-position mode (Phase 3d, Phase 6)
+
+---
+
+**3. Why position-specific valuation hydration (store_in_position_valuation)?**
+
+*Problem:* Multi-position players have different Z-scores at different positions. Should they have different dollar values too?
+
+*Answer:* Yes! A player's dollar value depends on their position pool's $/Z rates.
+
+*Solution:* `DISTRIBUTE_PLAYER_DOLLARS(store_in_position_valuation=True)`:
+- Reads Z-scores from `valuations_by_position[position]`
+- Applies position-specific $/Z rates
+- Stores dollars back into `valuations_by_position[position]`
+
+*Benefits:*
+- Multi-position players show accurate dollar values per position
+- Exports are consistent: tier, Z-scores, and dollars all align per position
+- Example: Trevor Story = $17 at UTIL (rostered), -$0.10 at SS (replacement)
+
+*Export logic:* `GET_POSITION_VALUATION(player, position)` reads from position-specific valuation if available, otherwise falls back to top-level.
+
+---
+
+**4. Why baseline shift for negative Z-scores (CALC_BASELINE_SHIFT)?**
+
+*Problem:* Some rostered players have negative Z-scores in weak categories. Without adjustment, they'd have negative dollar values in those categories, potentially resulting in negative total dollars.
+
+*Example:* A catcher might be -0.5 Z in SBN. At $2/Z, that's -$1 in SB value. If this catcher is barely positive in other categories, their total dollar value might be negative—despite being rosterable.
+
+*Solution:* `CALC_BASELINE_SHIFT` finds the minimum Z-score in each category's rostered tier. If negative, shifts all Z-scores up by that amount before dollar calculation (only for rostered players).
+
+*Benefits:*
+- Ensures all rostered players have positive total dollars
+- Maintains relative differences (gaps between players preserved)
+- Prevents budget allocation errors
+
+*Example:*
+- C pool: worst rostered catcher has -0.8 Z in SBN
+- Baseline shift: +0.8 applied to all rostered catchers' SBN Z-scores
+- Result: worst catcher gets 0 * $2 = $0 in SBN (not -$1.60)
+
+---
+
+**5. Why `rlp_archetype` stores raw stats (not Z-scores)?**
+
+*Clarification:* The `rlp_archetype` field in PositionPool stores the average **raw statistics** (R, HR, RBI, etc.) of the replacement tier—not Z-scores.
+
+*Purpose:* Diagnostic / export. Shows the "typical replacement-level player" stat line for each position.
+
+*Contrast with `rlp_raw_z_avg`:* This stores the average **raw Z-scores** of the replacement tier, used for normalization (baseline shift in Part 3).
+
+---
+
+**6. Why dedupe after multi-eligibility convergence?**
+
+*Problem:* Players in multiple pools inflate roster counts. You can't distribute dollars until each player is in exactly one pool.
+
+*Solution:* Dedupe (Phase 3c) runs AFTER multi-eligibility iteration converges:
+- Identifies players in multiple pools
+- Assigns each to their best-ranked position
+- Removes from non-primary pools
+- Slides players up to maintain roster sizes
+
+*Why not dedupe first?* We need converged Z-scores to know which position is "best" for each player. Deduping before iteration would use composite metrics (wRC+), which don't reflect category-based fantasy value.
+
+---
+
+**7. Why UTIL pool uses composite RLP baseline?**
+
+*Problem:* UTIL pool draws from multiple positions' replacement tiers. Each position has different baseline stats. What's the UTIL replacement level?
+
+*Solution:* UTIL iteration (Phase 4b) calculates `rlp_raw_z_avg` from the UTIL replacement tier itself—a composite of players from all positions.
+
+*Why track_z_per_pool=True for UTIL?* Preserves original position valuations (e.g., Trevor Story's SS valuation) while creating new UTIL valuations. This enables exports to show both:
+- SS export: Trevor Story's SS-specific tier/Z/dollars
+- UTIL export: Trevor Story's UTIL-specific tier/Z/dollars
 
 ---
 
@@ -846,13 +1345,16 @@ MAIN():
 This blueprint specifies:
 
 1. **Input/Output contracts** — exactly what data goes in and comes out
-2. **Data structures** — Player, PositionPool, and LeagueBudget objects
-3. **Core algorithms** — iteration, Z-score calculation, budget allocation, dollar conversion
-4. **UTIL pool construction** — collecting replacement-tier players to fill the flex slot
-5. **Validation checks** — sanity tests before output
-6. **Control flow** — the 12-phase pipeline from raw projections to dollar values
+2. **Data structures** — Player, PositionValuation, PositionPool, and LeagueBudget objects
+3. **Core algorithms** — multi-eligibility iteration, deduplication, Z-score calculation, budget allocation, position-specific dollar hydration
+4. **Multi-position player handling** — valuation at all eligible positions with intelligent deduplication
+5. **UTIL pool construction** — collecting replacement-tier players to fill the flex slot
+6. **Baseline shift mechanism** — ensuring rostered players have positive dollar values
+7. **Validation checks** — sanity tests including position valuation hydration
+8. **Control flow** — the 10-phase pipeline from raw projections to position-specific dollar values
+9. **Design rationale** — explanations of key architectural decisions
 
-Hand this document to any competent developer or LLM, and they can build a working TRP implementation in their language of choice.
+Hand this document to any competent developer or LLM, and they can build a working TRP implementation in their language of choice, complete with multi-position player handling and position-specific valuations.
 
 ---
 

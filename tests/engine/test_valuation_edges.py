@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from mtbl_valuations.domain.models import HitterStats, PitcherStats, Player
 from mtbl_valuations.engine.valuation import (
+    _get_categories,
     calc_means,
     calc_stdevs,
     calc_z_scores_for_archetype,
@@ -180,3 +181,9 @@ def test_calc_z_scores_for_archetype():
 
     scores = calc_z_scores_for_archetype({"R": 12.0}, hitters)
     assert "R" in scores
+
+
+def test_get_categories_with_empty_list():
+    """Test _get_categories helper with empty player list."""
+    result = _get_categories([], "anything", is_stat=True)
+    assert result == []

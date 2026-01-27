@@ -9,10 +9,52 @@ import pandas as pd
 
 from mtbl_valuations.domain.models import (
     HitterPlayer,
+    HitterStats,
     PitcherPlayer,
+    PitcherStats,
     Player,
     PositionPool,
+    Tier,
 )
+
+# Category to stat attribute mapping for hitters
+_HITTER_STAT_MAP = {
+    "R": lambda stats: stats.r,
+    "HR": lambda stats: stats.hr,
+    "RBI": lambda stats: stats.rbi,
+    "SBN": lambda stats: stats.sbn,
+    "OBP": lambda stats: stats.obp,
+    "SLG": lambda stats: stats.slg,
+}
+
+# Category to stat attribute mapping for pitchers
+_PITCHER_STAT_MAP = {
+    "IP": lambda stats: stats.outs / 3.0,  # Convert outs to IP
+    "ERA": lambda stats: stats.era,
+    "WHIP": lambda stats: stats.whip,
+    "K/9": lambda stats: stats.k9,
+    "QS": lambda stats: stats.qs,
+    "SVHD": lambda stats: stats.svhd,
+}
+
+
+def _build_tier_map(pool: PositionPool) -> dict[str, Tier]:
+    """Build player ID -> tier mapping for a pool.
+
+    Args:
+        pool: Position pool containing players in different tiers
+
+    Returns:
+        Dictionary mapping player IDs to their tier designation
+    """
+    tier_map = {}
+    for player in pool.rostered_players:
+        tier_map[player.id] = "ROSTERED"
+    for player in pool.replacement_players:
+        tier_map[player.id] = "REPLACEMENT"
+    for player in pool.below_replacement:
+        tier_map[player.id] = "BELOW_REPLACEMENT"
+    return tier_map
 
 
 def _get_position_valuation(
@@ -50,13 +92,7 @@ def export_hitter_position_csv(
     rows = []
 
     # Determine tier based on which list player is in for THIS pool
-    player_tiers = {}
-    for player in pool.rostered_players:
-        player_tiers[player.id] = "ROSTERED"
-    for player in pool.replacement_players:
-        player_tiers[player.id] = "REPLACEMENT"
-    for player in pool.below_replacement:
-        player_tiers[player.id] = "BELOW_REPLACEMENT"
+    player_tiers = _build_tier_map(pool)
 
     # Export rostered + replacement players from this pool
     # Players may have primary_position != pool.position (e.g., UTIL players in 1B pool)
@@ -93,21 +129,9 @@ def export_hitter_position_csv(
         hitter_stats = hitter_player.stats
         assert hitter_stats is not None  # type guard
         for cat in categories:
-            # Get raw stat value
-            if cat == "R":
-                raw_val = hitter_stats.r
-            elif cat == "HR":
-                raw_val = hitter_stats.hr
-            elif cat == "RBI":
-                raw_val = hitter_stats.rbi
-            elif cat == "SBN":
-                raw_val = hitter_stats.sbn
-            elif cat == "OBP":
-                raw_val = hitter_stats.obp
-            elif cat == "SLG":
-                raw_val = hitter_stats.slg
-            else:
-                raw_val = 0.0
+            # Get raw stat value using mapping
+            stat_getter = _HITTER_STAT_MAP.get(cat)
+            raw_val = stat_getter(hitter_stats) if stat_getter else 0.0
 
             row[f"{cat}_raw"] = round(raw_val, 3)
             row[f"{cat}_z"] = round(valuation_normalized_z.get(cat, 0.0), 3)
@@ -130,13 +154,7 @@ def export_pitcher_pool_csv(
     rows = []
 
     # Determine tier based on which list player is in for THIS pool
-    player_tiers = {}
-    for player in pool.rostered_players:
-        player_tiers[player.id] = "ROSTERED"
-    for player in pool.replacement_players:
-        player_tiers[player.id] = "REPLACEMENT"
-    for player in pool.below_replacement:
-        player_tiers[player.id] = "BELOW_REPLACEMENT"
+    player_tiers = _build_tier_map(pool)
 
     # Export rostered + replacement players from this pool
     # Players may have primary_position != pool.position (e.g., UTIL players in 1B pool)
@@ -172,21 +190,9 @@ def export_pitcher_pool_csv(
         pitcher_stats = pitcher_player.stats
         assert pitcher_stats is not None  # type guard
         for cat in categories:
-            # Get raw stat value
-            if cat == "IP":
-                raw_val = pitcher_stats.outs / 3.0  # Convert outs to IP
-            elif cat == "ERA":
-                raw_val = pitcher_stats.era
-            elif cat == "WHIP":
-                raw_val = pitcher_stats.whip
-            elif cat == "K/9":
-                raw_val = pitcher_stats.k9
-            elif cat == "QS":
-                raw_val = pitcher_stats.qs
-            elif cat == "SVHD":
-                raw_val = pitcher_stats.svhd
-            else:
-                raw_val = 0.0
+            # Get raw stat value using mapping
+            stat_getter = _PITCHER_STAT_MAP.get(cat)
+            raw_val = stat_getter(pitcher_stats) if stat_getter else 0.0
 
             row[f"{cat}_raw"] = round(raw_val, 3)
 

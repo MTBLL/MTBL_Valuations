@@ -72,7 +72,7 @@ def write_valuations_csv(
 def write_position_summary_csv(
     output_path: Path, all_pools: dict[str, PositionPool]
 ) -> None:
-    """Write position summary to CSV."""
+    """Write position summary to CSV with pool totals and category budgets."""
     rows = []
 
     for pos, pool in all_pools.items():
@@ -83,6 +83,20 @@ def write_position_summary_csv(
             "replacement_tier_count": len(pool.replacement_players),
             "total_budget": sum(pool.category_budgets.values()),
         }
+
+        # Add category budgets
+        for cat, budget in pool.category_budgets.items():
+            # Skip IP for RP pools (weight is 0.0, no budget)
+            if pool.position == "RP" and cat == "IP":
+                continue
+            row[f"budget_{cat}"] = round(budget, 2)
+
+        # Add pool total Z-scores per category
+        for cat, total_z in pool.total_pool_z.items():
+            # Skip IP for RP pools (weight is 0.0, no Z-score tracking)
+            if pool.position == "RP" and cat == "IP":
+                continue
+            row[f"pool_total_z_{cat}"] = round(total_z, 3)
 
         # Add $/Z per category
         for cat, rate in pool.dollars_per_z.items():
