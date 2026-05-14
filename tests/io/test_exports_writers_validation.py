@@ -13,7 +13,11 @@ from mtbl_valuations.io.exports import (
     export_hitter_position_csv,
     export_pitcher_pool_csv,
 )
-from mtbl_valuations.io.writers import write_player_json
+from mtbl_valuations.io.writers import (
+    build_player_valuations,
+    write_merged_player_json,
+    write_player_json,
+)
 from mtbl_valuations.validation.checks import (
     validate_budget_balance,
     validate_tier_counts,
@@ -117,6 +121,46 @@ def test_write_player_json_adds_stats(tmp_path):
 
     data = json.loads(output_path.read_text())
     assert data[0]["valuations"]["total_z"] == 1.234
+
+
+def test_build_player_valuations_keys_by_id():
+    pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
+    player = _make_hitter("h4")
+    player.valuation.total_z = 2.0
+    player.valuation.total_dollars = 20.0
+    player.valuation.normalized_z = {"R": 1.0}
+    player.valuation.dollar_values = {"R": 5.0}
+    pool.rostered_players = [player]
+
+    valuations = build_player_valuations({"SS": pool})
+
+    assert set(valuations) == {"h4"}
+    assert valuations["h4"]["total_dollars"] == 20.0
+    assert valuations["h4"]["z_scores"] == {"R": 1.0}
+
+
+def test_write_merged_player_json_keys_by_source(tmp_path):
+    """Each player's valuations are nested by source label; a player absent
+    from a source simply doesn't get that key, and a player absent from every
+    source gets no ``valuations`` block at all."""
+    valuations_by_source = {
+        "preseason": {"h1": {"total_dollars": 10.0}, "h2": {"total_dollars": 4.0}},
+        "ros": {"h1": {"total_dollars": 12.0}},
+    }
+    input_data = [{"id_espn": "h1"}, {"id_espn": "h2"}, {"id_espn": "h3"}]
+
+    output_path = tmp_path / "merged.json"
+    write_merged_player_json(output_path, input_data, valuations_by_source)
+
+    data = json.loads(output_path.read_text())
+    by_id = {rec["id_espn"]: rec for rec in data}
+    # h1 valued in both sources
+    assert set(by_id["h1"]["valuations"]) == {"preseason", "ros"}
+    assert by_id["h1"]["valuations"]["ros"]["total_dollars"] == 12.0
+    # h2 valued only in preseason
+    assert set(by_id["h2"]["valuations"]) == {"preseason"}
+    # h3 valued in no source -> no valuations block
+    assert "valuations" not in by_id["h3"]
 
 
 def test_validation_failures(capsys):

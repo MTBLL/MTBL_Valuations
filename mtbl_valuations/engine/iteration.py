@@ -325,6 +325,34 @@ def finalize_pool_player_valuations(pool: PositionPool) -> None:
             player.valuation.total_z = pos_val.total_z
 
 
+def sync_pool_z_to_position(pools: dict[str, PositionPool]) -> None:
+    """Mirror each pool's top-level Z-scores / tier into valuations_by_position.
+
+    ``iterate_to_convergence_global`` writes fresh scores to the top-level
+    ``player.valuation`` fields, but ``valuations_by_position`` still holds the
+    stale multi-position scores from the earlier per-position pass. Phase 5
+    reads both: ``calc_pool_dollars_per_z`` derives ``$/Z`` from the top-level
+    scores while ``distribute_player_dollars(store_in_position_valuation=True)``
+    applies that rate to the per-position scores. If the two diverge, the
+    per-position dollars no longer sum to the pool's category budget and the
+    detailed per-position exports misstate dollar values.
+
+    This is only meaningful for the hitter pools, which are the ones
+    distributed with ``store_per_position=True``. Pitcher pools distribute
+    from the top-level scores and intentionally leave ``valuations_by_position``
+    empty so the exports fall back to those top-level values.
+    """
+    for pos, pool in pools.items():
+        for player in (
+            pool.rostered_players + pool.replacement_players + pool.below_replacement
+        ):
+            _ensure_position_valuation(player, pos)
+            pos_val = player.valuation.valuations_by_position[pos]
+            pos_val.normalized_z = player.valuation.normalized_z
+            pos_val.total_z = player.valuation.total_z
+            pos_val.tier = player.valuation.tier
+
+
 def assign_player_tiers_per_position(pool: PositionPool) -> None:
     """Assign tiers in valuations_by_position (multi-position mode).
 

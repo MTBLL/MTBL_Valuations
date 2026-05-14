@@ -17,6 +17,7 @@ from mtbl_valuations.engine.iteration import (
     finalize_pool_player_valuations,
     iterate_to_convergence_global,
     iterate_to_convergence_per_position,
+    sync_pool_z_to_position,
 )
 from mtbl_valuations.engine.pools import (
     assign_primary_position_from_pool,
@@ -163,6 +164,10 @@ def run_trp_valuation(
             budget_config,
             league_settings,
         )
+        # The global re-iteration refreshes only the top-level Z-scores;
+        # mirror them into valuations_by_position so the per-position dollar
+        # distribution in Phase 5 stays consistent with the $/Z rates.
+        sync_pool_z_to_position(hitter_pools)
 
     # ========================================================================
     # Phase 4: Build UTIL pool from stabilized replacement tiers + pure DHs

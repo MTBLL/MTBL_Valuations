@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,8 +14,10 @@ from mtbl_valuations.engine.budget import (
 from mtbl_valuations.engine.iteration import (
     iterate_to_convergence_global,
     iterate_to_convergence_per_position,
+    sync_pool_z_to_position,
 )
 from mtbl_valuations.engine.pipeline import (
+    run_all_valuations,
     run_trp_valuation,
     validate_position_valuation_hydration,
 )
@@ -25,6 +28,7 @@ from mtbl_valuations.engine.pools import (
 )
 from mtbl_valuations.engine.valuation import (
     distribute_player_dollars,
+    distribute_pool_dollars,
 )
 from mtbl_valuations.validation.checks import (
     validate_budget_balance,
@@ -54,6 +58,30 @@ class TestPipeline:
         assert (output_dir / "position_summary.csv").exists()
         assert (output_dir / "hitters.json").exists()
         assert (output_dir / "pitchers.json").exists()
+
+    def test_run_all_valuations_multi_source(
+        self, batters_file, pitchers_file, league_file, budget_config_file, tmp_path
+    ):
+        """run_all_valuations runs the pipeline once per Fangraphs source,
+        writing per-source CSV subdirs plus a merged JSON keyed by source label."""
+        run_all_valuations(
+            batters_file, pitchers_file, league_file, budget_config_file, tmp_path
+        )
+
+        # Each source gets its own subdirectory of CSV outputs.
+        for label in ("preseason", "updated", "ros"):
+            assert (tmp_path / label / "valuations.csv").exists()
+            assert (tmp_path / label / "position_summary.csv").exists()
+
+        # A single merged JSON sits at the top level, with each player's
+        # valuations nested by source label.
+        merged = json.loads((tmp_path / "hitters.json").read_text())
+        assert (tmp_path / "pitchers.json").exists()
+        valued = [rec for rec in merged if "valuations" in rec]
+        assert valued, "expected at least one player with merged valuations"
+        # Every source label present on a record must be one we ran.
+        for rec in valued:
+            assert set(rec["valuations"]).issubset({"preseason", "updated", "ros"})
 
 
 class TestPipelinePhase3RegularHitters:
@@ -277,6 +305,11 @@ class TestBudgetsPhase5:
                     cat = cat.upper()
                     if cat in ["OBP", "SLG"]:
                         continue
+                    # model_dump now includes optional Savant diagnostic fields
+                    # (xwoba, sprint_speed, ...) that are None when a player has
+                    # no Savant record — they aren't production stats.
+                    if value is None:
+                        continue
                     pool_production[pos][cat] = pool_production[pos].get(cat, 0) + value
                     total_production[cat] = total_production.get(cat, 0) + value
 
@@ -316,6 +349,52 @@ class TestBudgetsPhase5:
             position_tot_budget = sum(b for b in pool.category_budgets.values())
             assert players_distribution - position_tot_budget == pytest.approx(0), (
                 f"Total dollars distributed to players ({players_distribution}) does not match pool total dollars ({position_tot_budget})"
+            )
+
+    def test_per_position_dollars_sum_to_budget_phase5(
+        self,
+        converged_hitter_pools_deduped: tuple[dict[str, PositionPool], int],
+        budget_config,
+        league_settings,
+        league_budget: LeagueBudget,
+    ):
+        """Regression: per-position dollars must sum to the pool's budget.
+
+        The real pipeline distributes with store_per_position=True, which
+        applies the $/Z rate (derived from top-level Z-scores) to the
+        per-position Z-scores in valuations_by_position. iterate_to_convergence_global
+        keeps those two score copies in sync, so the per-position total_dollars
+        stored for the detailed exports stay budget-balanced. Before that sync,
+        the per-position scores were stale from the Phase 3b pass and the totals
+        drifted off budget.
+        """
+        import copy
+
+        deduped, _ = converged_hitter_pools_deduped
+        hitter_pools = copy.deepcopy(deduped)
+
+        # Phase 3d: re-iterate post-dedupe, then sync valuations_by_position.
+        hitter_pools = iterate_to_convergence_global(
+            hitter_pools, budget_config, league_settings
+        )
+        sync_pool_z_to_position(hitter_pools)
+
+        # Phase 5: allocate budgets, then distribute per-position.
+        hitter_pools = allocate_position_budgets(
+            hitter_pools, league_budget, budget_config
+        )
+        hitter_pools = calc_pool_dollars_per_z(hitter_pools)
+        distribute_pool_dollars(hitter_pools, store_per_position=True)
+
+        for pos, pool in hitter_pools.items():
+            per_position_total = sum(
+                p.valuation.valuations_by_position[pos].total_dollars
+                for p in pool.rostered_players
+            )
+            pool_budget = sum(pool.category_budgets.values())
+            assert per_position_total == pytest.approx(pool_budget), (
+                f"{pos}: per-position dollars {per_position_total} "
+                f"!= pool budget {pool_budget}"
             )
 
 
