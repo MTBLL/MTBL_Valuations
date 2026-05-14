@@ -31,5 +31,19 @@
   "pa_weights": {
     "C": 500,
     "default": 600
+  },
+  "synthetic": {
+    "scaffold_source": "projs_updated",
+    "woba_scale": 1.25,
+    "sbn_speed_alpha": 0.4,
+    "run_blend_weights": {
+      "xwoba": 0.6,
+      "wrc_plus": 0.25,
+      "swing_take": 0.15
+    }
+  },
+  "qualified": {
+    "rate_pa_per_game": 1.5,
+    "team_games_percentile": 0.80
   }
 }

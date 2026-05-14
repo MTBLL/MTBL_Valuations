@@ -134,6 +134,16 @@ def export_hitter_position_csv(
             row[f"{cat}_raw"] = round(raw_val, 3)
             row[f"{cat}_z"] = round(valuation_normalized_z.get(cat, 0.0), 3)
 
+        # Sabermetric / Savant diagnostics (not valuation inputs).
+        # x* and sprint_speed are None when the player has no Savant record.
+        row["woba"] = round(hitter_stats.woba, 3)
+        row["wraa"] = round(hitter_stats.wraa, 2)
+        row["xwoba"] = hitter_stats.xwoba
+        row["xobp"] = hitter_stats.xobp
+        row["xslg"] = hitter_stats.xslg
+        row["xhr"] = hitter_stats.xhr
+        row["sprint_speed"] = hitter_stats.sprint_speed
+
         rows.append(row)
 
     # Sort by total_z descending (reflects actual performance tier)
@@ -200,6 +210,11 @@ def export_pitcher_pool_csv(
 
             row[f"{cat}_z"] = round(valuation_normalized_z.get(cat, 0.0), 3)
             row[f"{cat}_dollars"] = round(valuation_dollar_values.get(cat, 0.0), 2)
+
+        # Savant diagnostics (not valuation inputs).
+        # None when the player has no Savant expected-statistics record.
+        row["xera"] = pitcher_stats.xera
+        row["xwoba"] = pitcher_stats.xwoba
 
         rows.append(row)
 

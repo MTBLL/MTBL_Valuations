@@ -62,14 +62,17 @@ class TestPipeline:
     def test_run_all_valuations_multi_source(
         self, batters_file, pitchers_file, league_file, budget_config_file, tmp_path
     ):
-        """run_all_valuations runs the pipeline once per Fangraphs source,
+        """run_all_valuations runs the pipeline once per valuation source,
         writing per-source CSV subdirs plus a merged JSON keyed by source label."""
         run_all_valuations(
             batters_file, pitchers_file, league_file, budget_config_file, tmp_path
         )
 
-        # Each source gets its own subdirectory of CSV outputs.
-        for label in ("preseason", "updated", "ros"):
+        # Each source gets its own subdirectory of CSV outputs — the three
+        # Fangraphs projection sets, the Statcast-derived synthetic source,
+        # and the current-season-actuals source.
+        sources = ("preseason", "updated", "ros", "synthetic", "current")
+        for label in sources:
             assert (tmp_path / label / "valuations.csv").exists()
             assert (tmp_path / label / "position_summary.csv").exists()
 
@@ -81,7 +84,7 @@ class TestPipeline:
         assert valued, "expected at least one player with merged valuations"
         # Every source label present on a record must be one we ran.
         for rec in valued:
-            assert set(rec["valuations"]).issubset({"preseason", "updated", "ros"})
+            assert set(rec["valuations"]).issubset(set(sources))
 
 
 class TestPipelinePhase3RegularHitters:

@@ -194,6 +194,14 @@ def budget_config(budget_config_file):
 
 
 @pytest.fixture(scope="session")
+def qualified_pa(batters_file, budget_config) -> float:
+    """Sliding qualified-PA threshold for the current/synthetic sources."""
+    from mtbl_valuations.io.qualified import compute_qualified_pa
+
+    return compute_qualified_pa(batters_file, budget_config)
+
+
+@pytest.fixture(scope="session")
 def league_budget(league_file, budget_config) -> LeagueBudget:
     """Calculate league budget from league file."""
     league_settings = load_league_settings(league_file)

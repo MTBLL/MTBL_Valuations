@@ -25,6 +25,13 @@ logger = get_logger(__name__)
 #                    MLB-universe players; null for minors/NRI/FA/IL-60)
 ProjectionSource = Literal["projections", "projs_updated", "ros"]
 
+# A valuation source is a raw Fangraphs projection set, the "synthetic"
+# source derived from Statcast data (see io/synthetic.py), or the "current"
+# source built from current-season actuals (see io/current.py).
+ValuationSource = Literal[
+    "projections", "projs_updated", "ros", "synthetic", "current"
+]
+
 
 def load_batters(
     file_path: Path, source: ProjectionSource = "projections"
@@ -83,6 +90,13 @@ def load_batters(
         # Calculate SBN (Net SB = SB - CS)
         sbn = proj.get("SBN", proj.get("SB", 0) - proj.get("CS", 0))
 
+        # Savant diagnostics — observed Statcast data, absent for ~70% of
+        # players. Sub-sections default to {} so missing data yields None.
+        savant = record["stats"].get("savant") or {}
+        savant_all = savant.get("all") or {}
+        savant_hr = savant.get("home_runs") or {}
+        savant_speed = savant.get("sprint_speed") or {}
+
         stats = HitterStats(
             pa=float(proj["PA"]),
             ab=float(proj["AB"]),
@@ -93,6 +107,13 @@ def load_batters(
             obp=float(proj["OBP"]),
             slg=float(proj["SLG"]),
             wrc_plus=float(proj.get("wRC+", 100.0)),
+            woba=float(proj.get("wOBA", 0.0)),
+            wraa=float(proj.get("wRAA", 0.0)),
+            xwoba=savant_all.get("xwOBA"),
+            xobp=savant_all.get("xOBP"),
+            xslg=savant_all.get("xSLG"),
+            xhr=savant_hr.get("xHR"),
+            sprint_speed=savant_speed.get("sprint_speed"),
         )
 
         player = Player(
@@ -171,6 +192,11 @@ def load_pitchers(
         # Convert IP to outs
         outs = proj.get("OUTS", float(proj["IP"]) * 3)
 
+        # Savant diagnostics — observed Statcast data, absent for ~70% of
+        # players. Sub-section defaults to {} so missing data yields None.
+        savant = record["stats"].get("savant") or {}
+        savant_exp = savant.get("expected_statistics") or {}
+
         stats = PitcherStats(
             outs=outs,
             era=proj.get("ERA"),
@@ -179,6 +205,8 @@ def load_pitchers(
             qs=proj.get("QS", 0),
             svhd=svhd,
             fip=proj.get("FIP"),
+            xera=savant_exp.get("xERA"),
+            xwoba=savant_exp.get("xwOBA"),
         )
 
         player = Player(

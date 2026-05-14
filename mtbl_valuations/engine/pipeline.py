@@ -28,12 +28,21 @@ from mtbl_valuations.engine.pools import (
 )
 from mtbl_valuations.engine.valuation import distribute_pool_dollars
 from mtbl_valuations.io.exports import export_detailed_position_csvs
+from mtbl_valuations.io.current import (
+    load_batters_current,
+    load_pitchers_current,
+)
 from mtbl_valuations.io.loader import (
-    ProjectionSource,
+    ValuationSource,
     load_batters,
     load_budget_config,
     load_league_settings,
     load_pitchers,
+)
+from mtbl_valuations.io.qualified import compute_qualified_pa
+from mtbl_valuations.io.synthetic import (
+    load_batters_synthetic,
+    load_pitchers_synthetic,
 )
 from mtbl_valuations.io.writers import (
     build_player_valuations,
@@ -43,12 +52,16 @@ from mtbl_valuations.io.writers import (
     write_valuations_csv,
 )
 
-# Fangraphs projection sources mapped to the output-subdir / JSON-key label
-# used in the merged multi-source outputs.
-SOURCE_LABELS: dict[ProjectionSource, str] = {
+# Valuation sources mapped to the output-subdir / JSON-key label used in the
+# merged multi-source outputs. The first three are raw Fangraphs projection
+# sets; "synthetic" is derived from Statcast data (see io/synthetic.py);
+# "current" values current-season actuals (see io/current.py).
+SOURCE_LABELS: dict[ValuationSource, str] = {
     "projections": "preseason",
     "projs_updated": "updated",
     "ros": "ros",
+    "synthetic": "synthetic",
+    "current": "current",
 }
 from mtbl_valuations.validation.checks import (
     validate_budget_balance,
@@ -64,15 +77,16 @@ def run_trp_valuation(
     league_file: Path,
     budget_config_file: Path,
     output_dir: Path,
-    source: ProjectionSource = "projections",
+    source: ValuationSource = "projections",
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """
-    Run the complete TRP valuation pipeline for a single projection source.
+    Run the complete TRP valuation pipeline for a single valuation source.
     This is the 12-phase pipeline from the architecture document.
 
     Args:
-        source: Which Fangraphs projection set to value against. Players with
-            no projection for the source are skipped by the loader.
+        source: Which valuation source to value against — a Fangraphs
+            projection set or the Statcast-derived "synthetic" source.
+            Players with no data for the source are skipped by the loader.
 
     Returns:
         (hitter_valuations, pitcher_valuations) - each a mapping of player id
@@ -83,12 +97,31 @@ def run_trp_valuation(
     # ========================================================================
     # Phase 1: Initialize
     # ========================================================================
-    print(f"Phase 1: Loading data (projection source: {source})...")
-    hitter_players = load_batters(batters_file, source)
-    pitcher_players = load_pitchers(pitchers_file, source)
+    print(f"Phase 1: Loading data (valuation source: {source})...")
     league_settings = load_league_settings(league_file)
     budget_config = load_budget_config(budget_config_file)
     league_budget = calc_league_budget(league_settings, budget_config)
+
+    if source == "synthetic":
+        # Synthetic stats are built from Statcast data; the loader needs the
+        # budget config for its blend coefficients and the sliding qualified
+        # threshold for its sample gate.
+        qualified_pa = compute_qualified_pa(batters_file, budget_config)
+        hitter_players = load_batters_synthetic(
+            batters_file, budget_config, qualified_pa
+        )
+        pitcher_players = load_pitchers_synthetic(
+            pitchers_file, budget_config, qualified_pa
+        )
+    elif source == "current":
+        # Current-season actuals, gated by the sliding qualified threshold.
+        qualified_pa = compute_qualified_pa(batters_file, budget_config)
+        hitter_players = load_batters_current(batters_file, qualified_pa)
+        pitcher_players = load_pitchers_current(pitchers_file, qualified_pa)
+    else:
+        # mypy narrows `source` to ProjectionSource in this branch.
+        hitter_players = load_batters(batters_file, source)
+        pitcher_players = load_pitchers(pitchers_file, source)
 
     ros_slots = league_settings["roster_slots"]
     num_teams = league_settings["num_teams"]
