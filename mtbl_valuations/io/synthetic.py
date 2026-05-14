@@ -20,9 +20,13 @@ Hitter categories
 Pitcher categories
 ------------------
 - ERA       : Savant xERA directly (already on ERA scale)
-- WHIP      : projected WHIP scaled by xwOBA-against vs league
-- K/9       : projected K/9 scaled by whiff% vs league
+- WHIP      : league-average WHIP scaled by xwOBA-against vs league
+- K/9       : league-average K/9 scaled by whiff% vs league
 - IP/QS/SVHD: from the projection (no Statcast proxy for role/usage)
+
+The WHIP and K/9 bridges scale a league baseline (not the pitcher's own
+projection) by a skill ratio — scaling the projection would double-count
+skill it already reflects (an elite-whiff reliever blowing up to 36 K/9).
 """
 
 from __future__ import annotations
@@ -63,6 +67,8 @@ _FALLBACK_LG_XWOBA_HITTER = 0.320
 _FALLBACK_LG_R_PER_PA = 0.12
 _FALLBACK_LG_XWOBA_PITCHER = 0.310
 _FALLBACK_LG_WHIFF = 25.0
+_FALLBACK_LG_K9 = 8.5
+_FALLBACK_LG_WHIP = 1.25
 
 
 def _synthetic_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -283,9 +289,17 @@ def load_pitchers_synthetic(
 
     # ---- Pass 1: league baselines for the ratio bridges ----
     # Gated on Statcast sample so the baselines aren't skewed by tiny samples.
+    # lg_k9 / lg_whip are league-average *projected* rates: the WHIP and K/9
+    # bridges scale these league baselines by a skill ratio rather than the
+    # player's own projection, which would double-count skill the projection
+    # already reflects.
     xwoba_vals: list[float] = []
     whiff_vals: list[float] = []
+    k9_vals: list[float] = []
+    whip_vals: list[float] = []
     for record in data:
+        fg = record.get("stats", {}).get("fangraphs") or {}
+        proj = fg.get(scaffold)
         savant = record.get("stats", {}).get("savant") or {}
         exp = savant.get("expected_statistics") or {}
         savant_all = savant.get("all") or {}
@@ -296,6 +310,11 @@ def load_pitchers_synthetic(
             xwoba_vals.append(float(exp["xwOBA"]))
         if savant_all.get("swing_miss_pct") is not None:
             whiff_vals.append(float(savant_all["swing_miss_pct"]))
+        if proj:
+            if proj.get("K/9") is not None:
+                k9_vals.append(float(proj["K/9"]))
+            if proj.get("WHIP") is not None:
+                whip_vals.append(float(proj["WHIP"]))
 
     lg_xwoba = (
         sum(xwoba_vals) / len(xwoba_vals)
@@ -305,6 +324,8 @@ def load_pitchers_synthetic(
     lg_whiff = (
         sum(whiff_vals) / len(whiff_vals) if whiff_vals else _FALLBACK_LG_WHIFF
     )
+    lg_k9 = sum(k9_vals) / len(k9_vals) if k9_vals else _FALLBACK_LG_K9
+    lg_whip = sum(whip_vals) / len(whip_vals) if whip_vals else _FALLBACK_LG_WHIP
 
     # ---- Pass 2: synthesize ----
     pitcher_players: list[PitcherPlayer] = []
@@ -341,20 +362,21 @@ def load_pitchers_synthetic(
 
         # ERA: Savant xERA directly (already on ERA scale).
         era_syn = float(xera)
-        # WHIP: scale the projected WHIP by xwOBA-against vs league.
+        # WHIP: scale the league-average WHIP by this pitcher's xwOBA-against
+        # vs league. Scaling the *league* baseline (not the player's own
+        # projection) avoids double-counting skill the projection already
+        # reflects.
         xwoba_against = exp.get("xwOBA")
-        proj_whip = float(proj.get("WHIP", 0.0))
         if xwoba_against is not None and lg_xwoba > 0:
-            whip_syn = proj_whip * (float(xwoba_against) / lg_xwoba)
+            whip_syn = lg_whip * (float(xwoba_against) / lg_xwoba)
         else:
-            whip_syn = proj_whip
-        # K/9: scale the projected K/9 by whiff% vs league.
+            whip_syn = lg_whip
+        # K/9: scale the league-average K/9 by this pitcher's whiff% vs league.
         whiff = savant_all.get("swing_miss_pct")
-        proj_k9 = float(proj.get("K/9", 0.0))
         if whiff is not None and lg_whiff > 0:
-            k9_syn = proj_k9 * (float(whiff) / lg_whiff)
+            k9_syn = lg_k9 * (float(whiff) / lg_whiff)
         else:
-            k9_syn = proj_k9
+            k9_syn = lg_k9
 
         stats = PitcherStats(
             outs=outs,
