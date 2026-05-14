@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from mtbl_valuations.domain.models import PositionPool
 from mtbl_valuations.engine.budget import (
@@ -27,16 +28,27 @@ from mtbl_valuations.engine.pools import (
 from mtbl_valuations.engine.valuation import distribute_pool_dollars
 from mtbl_valuations.io.exports import export_detailed_position_csvs
 from mtbl_valuations.io.loader import (
+    ProjectionSource,
     load_batters,
     load_budget_config,
     load_league_settings,
     load_pitchers,
 )
 from mtbl_valuations.io.writers import (
+    build_player_valuations,
+    write_merged_player_json,
     write_player_json,
     write_position_summary_csv,
     write_valuations_csv,
 )
+
+# Fangraphs projection sources mapped to the output-subdir / JSON-key label
+# used in the merged multi-source outputs.
+SOURCE_LABELS: dict[ProjectionSource, str] = {
+    "projections": "preseason",
+    "projs_updated": "updated",
+    "ros": "ros",
+}
 from mtbl_valuations.validation.checks import (
     validate_budget_balance,
     validate_position_valuation_hydration,
@@ -51,19 +63,28 @@ def run_trp_valuation(
     league_file: Path,
     budget_config_file: Path,
     output_dir: Path,
-) -> None:
+    source: ProjectionSource = "projections",
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """
-    Run the complete TRP valuation pipeline.
+    Run the complete TRP valuation pipeline for a single projection source.
     This is the 12-phase pipeline from the architecture document.
+
+    Args:
+        source: Which Fangraphs projection set to value against. Players with
+            no projection for the source are skipped by the loader.
+
+    Returns:
+        (hitter_valuations, pitcher_valuations) - each a mapping of player id
+        to the serialized valuation payload, for merging across sources.
     """
     print("=== TRP Valuation Engine ===\n")
 
     # ========================================================================
     # Phase 1: Initialize
     # ========================================================================
-    print("Phase 1: Loading data...")
-    hitter_players = load_batters(batters_file)
-    pitcher_players = load_pitchers(pitchers_file)
+    print(f"Phase 1: Loading data (projection source: {source})...")
+    hitter_players = load_batters(batters_file, source)
+    pitcher_players = load_pitchers(pitchers_file, source)
     league_settings = load_league_settings(league_file)
     budget_config = load_budget_config(budget_config_file)
     league_budget = calc_league_budget(league_settings, budget_config)
@@ -318,3 +339,61 @@ def run_trp_valuation(
     )
 
     print("\n=== TRP Valuation Complete ===")
+
+    # Per-player valuation payloads, returned so callers can merge across
+    # projection sources into a single enriched JSON.
+    hitter_valuations = build_player_valuations(hitter_pools)
+    pitcher_valuations = build_player_valuations(sp_pool | rp_pool)
+    return hitter_valuations, pitcher_valuations
+
+
+def run_all_valuations(
+    batters_file: Path,
+    pitchers_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    output_dir: Path,
+) -> None:
+    """
+    Run the TRP valuation for every Fangraphs projection source.
+
+    Each source's CSV outputs land in its own subdirectory of ``output_dir``
+    (preseason/, updated/, ros/). A single merged ``hitters.json`` /
+    ``pitchers.json`` is written at ``output_dir`` with each player's
+    valuations keyed by source label.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    hitter_vals_by_source: dict[str, dict[str, dict[str, Any]]] = {}
+    pitcher_vals_by_source: dict[str, dict[str, dict[str, Any]]] = {}
+
+    for source, label in SOURCE_LABELS.items():
+        print(f"\n{'#' * 70}")
+        print(f"# Projection source: {label}  ({source})")
+        print(f"{'#' * 70}\n")
+        hitter_valuations, pitcher_valuations = run_trp_valuation(
+            batters_file,
+            pitchers_file,
+            league_file,
+            budget_config_file,
+            output_dir / label,
+            source,
+        )
+        hitter_vals_by_source[label] = hitter_valuations
+        pitcher_vals_by_source[label] = pitcher_valuations
+
+    # Merged enriched JSON across all sources
+    print("\nWriting merged multi-source player JSON...")
+    with open(batters_file) as f:
+        batters_data = json.load(f)
+    with open(pitchers_file) as f:
+        pitchers_data = json.load(f)
+
+    write_merged_player_json(
+        output_dir / "hitters.json", batters_data, hitter_vals_by_source
+    )
+    print(f"  ✓ Wrote {output_dir / 'hitters.json'}")
+    write_merged_player_json(
+        output_dir / "pitchers.json", pitchers_data, pitcher_vals_by_source
+    )
+    print(f"  ✓ Wrote {output_dir / 'pitchers.json'}")

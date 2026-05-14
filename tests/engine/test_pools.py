@@ -201,12 +201,40 @@ class TestBuildPositionPools:
         self, regular_hitter_pools, players_from_hitters
     ):
         hitter_pools = regular_hitter_pools
-
-        ss_pool = regular_hitter_pools["SS"]
-        of_pool = regular_hitter_pools["OF"]
         assert hitter_pools is not None
-        mookie = next(p for p in players_from_hitters if p.name == "Mookie Betts")
-        assert mookie in ss_pool.rostered_players and mookie in of_pool.rostered_players
+
+        # build_position_pools(use_eligibility=True) places each player in EVERY
+        # position pool they're eligible for. Verify that invariant against a
+        # genuinely multi-pool-eligible player from the data (drift-resistant).
+        pool_slots = set(hitter_pools.keys())
+
+        def eligible_pools(player):
+            return pool_slots & set(player.positions)
+
+        # Only consider players actually built into the pools (excludes pure-DH
+        # players and Ohtani, who are routed to the UTIL pool separately).
+        pooled_players = {
+            p.id
+            for pool in hitter_pools.values()
+            for p in pool.rostered_players
+            + pool.replacement_players
+            + pool.below_replacement
+        }
+        multi_eligible = next(
+            p
+            for p in players_from_hitters
+            if p.id in pooled_players and len(eligible_pools(p)) >= 2
+        )
+        for pos in eligible_pools(multi_eligible):
+            pool = hitter_pools[pos]
+            all_tiers = (
+                pool.rostered_players
+                + pool.replacement_players
+                + pool.below_replacement
+            )
+            assert multi_eligible in all_tiers, (
+                f"{multi_eligible.name} eligible for {pos} but missing from {pos} pool"
+            )
 
 
 class TestBuildUtilPool:

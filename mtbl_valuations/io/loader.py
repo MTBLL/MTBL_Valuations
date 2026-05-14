@@ -14,20 +14,53 @@ from ..domain.models import (
     Player,
     Valuation,
 )
+from ..utils.log import get_logger
+
+logger = get_logger(__name__)
+
+# Upstream nests three Fangraphs projection sets under stats.fangraphs:
+#   projections    - preseason projection (full season)
+#   projs_updated  - in-season updated full-season projection
+#   ros            - rest-of-season projection (only published for active
+#                    MLB-universe players; null for minors/NRI/FA/IL-60)
+ProjectionSource = Literal["projections", "projs_updated", "ros"]
 
 
-def load_batters(file_path: Path) -> list[HitterPlayer]:
-    """Load and normalize batter data from batters_matched.json."""
+def load_batters(
+    file_path: Path, source: ProjectionSource = "projections"
+) -> list[HitterPlayer]:
+    """Load and normalize batter data from batters_matched.json.
+
+    Args:
+        file_path: Path to batters_matched.json
+        source: Which Fangraphs projection set to value against. See
+            ProjectionSource. Players with no projection for the chosen source
+            are skipped (e.g. most players have no ``ros`` line).
+    """
     with open(file_path) as f:
         data = json.load(f)
 
     hitter_players: list[HitterPlayer] = []
+    skipped_no_projections = 0
 
     for record in data:
-        # Skip if no statistics or projections
-        assert "stats" in record and "projections" in record["stats"]
+        # Upstream restructured stats: Fangraphs projections now live under
+        # stats.fangraphs.{projections,projs_updated,ros}
+        assert "stats" in record and "fangraphs" in record["stats"]
 
-        proj = record["stats"]["projections"]
+        proj = record["stats"]["fangraphs"].get(source)
+
+        # Skip players with no projection for this source (prospects, inactive
+        # roster, or — for ros — anyone outside the active MLB universe).
+        if not proj:
+            skipped_no_projections += 1
+            logger.debug(
+                "No Fangraphs %s for batter %s (id_espn=%s) — skipping",
+                source,
+                record.get("name", "<unknown>"),
+                record.get("id_espn", "<unknown>"),
+            )
+            continue
 
         # Ensure required projection fields exist
         assert all(
@@ -75,21 +108,49 @@ def load_batters(file_path: Path) -> list[HitterPlayer]:
 
         hitter_players.append(HitterPlayer(player=player, stats=stats))
 
+    if skipped_no_projections:
+        logger.info(
+            "Skipped %d batters with no Fangraphs %s", skipped_no_projections, source
+        )
+
     return hitter_players
 
 
-def load_pitchers(file_path: Path) -> list[PitcherPlayer]:
-    """Load and normalize pitcher data from pitchers_matched.json."""
+def load_pitchers(
+    file_path: Path, source: ProjectionSource = "projections"
+) -> list[PitcherPlayer]:
+    """Load and normalize pitcher data from pitchers_matched.json.
+
+    Args:
+        file_path: Path to pitchers_matched.json
+        source: Which Fangraphs projection set to value against. See
+            ProjectionSource. Players with no projection for the chosen source
+            are skipped (e.g. most players have no ``ros`` line).
+    """
     with open(file_path) as f:
         data = json.load(f)
 
     pitcher_players: list[PitcherPlayer] = []
+    skipped_no_projections = 0
 
     for record in data:
-        # Skip if no projections
-        assert "stats" in record and "projections" in record["stats"]
+        # Upstream restructured stats: Fangraphs projections now live under
+        # stats.fangraphs.{projections,projs_updated,ros}
+        assert "stats" in record and "fangraphs" in record["stats"]
 
-        proj = record["stats"]["projections"]
+        proj = record["stats"]["fangraphs"].get(source)
+
+        # Skip players with no projection for this source (prospects, inactive
+        # roster, or — for ros — anyone outside the active MLB universe).
+        if not proj:
+            skipped_no_projections += 1
+            logger.debug(
+                "No Fangraphs %s for pitcher %s (id_espn=%s) — skipping",
+                source,
+                record.get("name", "<unknown>"),
+                record.get("id_espn", "<unknown>"),
+            )
+            continue
 
         # Determine role from primary_position
         primary_pos = record.get("primary_position", "")
@@ -132,6 +193,11 @@ def load_pitchers(file_path: Path) -> list[PitcherPlayer]:
         )
 
         pitcher_players.append(PitcherPlayer(player=player, stats=stats))
+
+    if skipped_no_projections:
+        logger.info(
+            "Skipped %d pitchers with no Fangraphs %s", skipped_no_projections, source
+        )
 
     return pitcher_players
 

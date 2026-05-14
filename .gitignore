@@ -5,3 +5,4 @@
 .temp/
 tests/.cache/
 .coverage
+.DS_Store

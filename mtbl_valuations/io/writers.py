@@ -119,16 +119,14 @@ def write_position_summary_csv(
         df.to_csv(output_path, index=False)
 
 
-def write_player_json(
-    output_path: Path,
-    input_data: list[dict[str, Any]],
+def build_player_valuations(
     all_pools: dict[str, PositionPool],
-) -> None:
+) -> dict[str, dict[str, Any]]:
+    """Build a lookup of player id -> serialized valuation for a set of pools.
+
+    Returns the same per-player valuation payload that gets embedded in the
+    enriched player JSON.
     """
-    Write enriched player JSON with valuation data.
-    Matches input schema and appends stats.valuations object.
-    """
-    # Build lookup of player valuations
     player_valuations: dict[str, dict[str, Any]] = {}
 
     for pool in all_pools.values():
@@ -152,6 +150,20 @@ def write_player_json(
                 },
             }
 
+    return player_valuations
+
+
+def write_player_json(
+    output_path: Path,
+    input_data: list[dict[str, Any]],
+    all_pools: dict[str, PositionPool],
+) -> None:
+    """
+    Write enriched player JSON with single-source valuation data.
+    Matches input schema and appends a flat ``valuations`` object per player.
+    """
+    player_valuations = build_player_valuations(all_pools)
+
     # Enrich input data with valuations
     enriched = []
     for record in input_data:
@@ -161,5 +173,37 @@ def write_player_json(
         enriched.append(record)
 
     # Write to JSON
+    with open(output_path, "w") as f:
+        json.dump(enriched, f, indent=2)
+
+
+def write_merged_player_json(
+    output_path: Path,
+    input_data: list[dict[str, Any]],
+    valuations_by_source: dict[str, dict[str, dict[str, Any]]],
+) -> None:
+    """
+    Write enriched player JSON with valuations from multiple projection sources.
+
+    Args:
+        output_path: Destination JSON path
+        input_data: Raw player records (each must have ``id_espn``)
+        valuations_by_source: Mapping of source label (e.g. "preseason",
+            "updated", "ros") -> {player_id -> valuation payload}. A player
+            only appears under a source label if they were valued for that
+            source (e.g. most players have no "ros" entry).
+    """
+    enriched = []
+    for record in input_data:
+        player_id = str(record["id_espn"])
+        merged = {
+            label: vals[player_id]
+            for label, vals in valuations_by_source.items()
+            if player_id in vals
+        }
+        if merged:
+            record["valuations"] = merged
+        enriched.append(record)
+
     with open(output_path, "w") as f:
         json.dump(enriched, f, indent=2)

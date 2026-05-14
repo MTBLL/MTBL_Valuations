@@ -189,15 +189,9 @@ class TestPipelinePhase4Util:
         num_teams = league_settings["num_teams"]
         # Create a copy to avoid mutating the session-scoped fixture
         hitter_pools = dict(hitter_pools_deduped_converged)
-        # assert Michael Busch is in 1B replacement_players
-        assert (
-            next(
-                p
-                for p in hitter_pools["1B"].replacement_players
-                if p.name == "Michael Busch"
-            )
-            is not None
-        )
+        # Phase 4b consumes each pool's replacement tier to build the UTIL pool,
+        # so every position pool must have a non-empty replacement tier.
+        assert len(hitter_pools["1B"].replacement_players) > 0
         # Phase 4b
         # Iterate UTIL pool with composite RLP baseline
         # Use per-position mode to avoid clobbering tier attributes of players
