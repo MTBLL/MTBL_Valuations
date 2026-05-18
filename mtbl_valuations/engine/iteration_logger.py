@@ -69,10 +69,27 @@ class IterationLogger:
 
     # ----- helpers ----------------------------------------------------
 
-    def _phase_dir(self, phase: str) -> Path:
-        d = self.run_dir / self.source / phase
+    def _pos_path(self, pos: str) -> Path:
+        """Single log file per (source, pos). All phases / iterations are
+        appended to it with section banners so the file is grep-friendly:
+
+            grep -n "^PHASE:" logs/.../updated/SS.log
+
+        lists every section start with its line number.
+        """
+        d = self.run_dir / self.source
         d.mkdir(parents=True, exist_ok=True)
-        return d
+        return d / f"{pos}.log"
+
+    @staticmethod
+    def _banner(phase: str, pos: str, source: str, iteration: int | None) -> str:
+        bar = "=" * 80
+        head = (
+            f"PHASE: {phase}   |   POS: {pos}   |   SOURCE: {source}"
+            if iteration is None
+            else f"PHASE: {phase}   |   POS: {pos}   |   ITER: {iteration}   |   SOURCE: {source}"
+        )
+        return f"\n\n{bar}\n{head}\n{bar}\n"
 
     @staticmethod
     def _composition_hash(pool: PositionPool) -> str:
@@ -122,11 +139,9 @@ class IterationLogger:
         demoted = prev_ids - cur_ids
         changed = comp_hash != prev_hash
 
-        out = self._phase_dir(phase) / f"{pos}_iter{iteration:02d}.log"
-        with open(out, "w") as f:
-            f.write(
-                f"=== {phase} / {pos} / iter {iteration} / source={self.source} ===\n"
-            )
+        out = self._pos_path(pos)
+        with open(out, "a") as f:
+            f.write(self._banner(phase, pos, self.source, iteration))
             f.write(f"ts: {datetime.now().isoformat(timespec='seconds')}\n")
             n_total = len(
                 pool.rostered_players
@@ -301,9 +316,9 @@ class IterationLogger:
     ) -> None:
         """Emit a Phase-5-style budget snapshot for one pool."""
         pos = pool.position
-        out = self._phase_dir(phase) / f"{pos}.log"
-        with open(out, "w") as f:
-            f.write(f"=== {phase} / {pos} / source={self.source} ===\n")
+        out = self._pos_path(pos)
+        with open(out, "a") as f:
+            f.write(self._banner(phase, pos, self.source, None))
             f.write(f"ts: {datetime.now().isoformat(timespec='seconds')}\n\n")
 
             cat_df = pd.DataFrame(
