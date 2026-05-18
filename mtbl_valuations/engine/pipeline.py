@@ -301,28 +301,34 @@ def _run_trp_valuation_inner(
     distribute_pool_dollars(hitter_pools, store_per_position=True)
 
     # Phase 5 budget snapshot — one log per pool with category budgets,
-    # $/Z, baseline shifts and per-player dollars. league_raw is the mean
-    # of each category across every hitter loaded for this source — gives
-    # the per-pool log a "league context" anchor next to pos-pool mean.
+    # $/Z, baseline shifts and per-player dollars. league_raw / league_budget
+    # are SUMS across every rostered hitter / every pool's budget across the
+    # league — gives the per-pool log a "this pool's slice of the league"
+    # anchor against the pos_raw / pos_budget columns.
     if iter_logger is not None:
         hitter_cats = league_settings["batting_categories"]
-        n_hitters = len(hitter_players)
-        league_raw: dict[str, float] = (
-            {
-                c: sum(get_player_stat(hp.player, c) for hp in hitter_players)
-                / n_hitters
-                for c in hitter_cats
-            }
-            if n_hitters
-            else {}
-        )
+        league_raw_sum: dict[str, float] = {
+            c: sum(
+                get_player_stat(p, c)
+                for pool in hitter_pools.values()
+                for p in pool.rostered_players
+            )
+            for c in hitter_cats
+        }
+        league_budget_sum: dict[str, float] = {
+            c: sum(
+                pool.category_budgets.get(c, 0.0) for pool in hitter_pools.values()
+            )
+            for c in hitter_cats
+        }
         for pool in hitter_pools.values():
             iter_logger.log_budget(
                 pool,
                 "phase5-budget",
                 per_position=True,
                 categories=hitter_cats,
-                league_raw=league_raw,
+                league_raw=league_raw_sum,
+                league_budget=league_budget_sum,
             )
 
     # Validate position valuations are hydrated

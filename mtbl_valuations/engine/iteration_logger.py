@@ -339,13 +339,17 @@ class IterationLogger:
         per_position: bool,
         categories: list[str],
         league_raw: dict[str, float] | None = None,
+        league_budget: dict[str, float] | None = None,
     ) -> None:
         """Emit a Phase-5-style budget snapshot for one pool.
 
         Args:
-            league_raw: Optional source-wide mean per category (mean across
-                every hitter loaded for this valuation source). Useful for
-                comparing the pos-pool baseline against the broader universe.
+            league_raw: Sum of each category across every rostered hitter
+                across all position pools. Anchors the pos-pool's
+                production against the league total.
+            league_budget: Sum of each category's budget across every
+                position pool — the league-wide pot allocated to that
+                category by Phase 5's allocator.
         """
         pos = pool.position
         out = self._pos_path(pos)
@@ -360,16 +364,17 @@ class IterationLogger:
                     (league_raw or {}).get(c, 0.0) for c in categories
                 ],
                 "pos_raw": [
-                    (sum(get_player_stat(p, c) for p in rostered) / len(rostered))
-                    if rostered
-                    else 0.0
+                    sum(get_player_stat(p, c) for p in rostered)
                     for c in categories
+                ],
+                "league_budget": [
+                    (league_budget or {}).get(c, 0.0) for c in categories
+                ],
+                "pos_budget": [
+                    pool.category_budgets.get(c, 0.0) for c in categories
                 ],
                 "stdev": [
                     pool.rostered_tier_stdevs.get(c, 0.0) for c in categories
-                ],
-                "budget": [
-                    pool.category_budgets.get(c, 0.0) for c in categories
                 ],
                 "$/Z": [pool.dollars_per_z.get(c, 0.0) for c in categories],
                 "total_pool_z": [
@@ -383,7 +388,7 @@ class IterationLogger:
                 ],
             }
             cat_df = pd.DataFrame(cat_table)
-            f.write("category budgets:\n")
+            f.write("category budgets (raw values are SUMS over rostered tiers):\n")
             f.write(cat_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
             f.write("\n\n")
 
@@ -441,6 +446,40 @@ class IterationLogger:
                     row[f"{c}_$"] = dv.get(c, 0.0)
                 rows.append(row)
             rows.sort(key=lambda r: -r["total_$"])
+
+            # If a replacement-tier player out-prices the lowest rostered
+            # player, the dollar allocation is mis-applied (the rostered tier
+            # should always be paid above the RLP tier). Flag for review.
+            rost_dollars = [r["total_$"] for r in rows if r["tier"] == "ROSTERED"]
+            rlp_dollars = [r["total_$"] for r in rows if r["tier"] == "REPLACEMENT"]
+            if rost_dollars and rlp_dollars:
+                last_rost = min(rost_dollars)
+                top_rlp = max(rlp_dollars)
+                if top_rlp > last_rost:
+                    top_rlp_name = next(
+                        r["name"]
+                        for r in rows
+                        if r["tier"] == "REPLACEMENT" and r["total_$"] == top_rlp
+                    )
+                    last_rost_name = next(
+                        r["name"]
+                        for r in rows
+                        if r["tier"] == "ROSTERED" and r["total_$"] == last_rost
+                    )
+                    self.warnings.append(
+                        {
+                            "source": self.source,
+                            "phase": phase,
+                            "pos": pos,
+                            "iter": 0,
+                            "kind": "rlp_outprices_rostered",
+                            "msg": (
+                                f"top RLP {top_rlp_name} ${top_rlp:.2f} > "
+                                f"lowest rostered {last_rost_name} ${last_rost:.2f}"
+                            ),
+                        }
+                    )
+
             if rows:
                 df = pd.DataFrame(rows)
                 f.write("players (rostered + replacement, by $):\n")
