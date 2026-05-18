@@ -22,10 +22,12 @@ from mtbl_valuations.engine.budget import (
     calc_league_budget,
     calc_pool_dollars_per_z,
 )
+from mtbl_valuations.domain.models import LeagueBudget, Player
 from mtbl_valuations.engine.iteration import (
     finalize_pool_player_valuations,
     iterate_to_convergence_global,
     iterate_to_convergence_per_position,
+    recompute_pool_z_in_place,
     sync_pool_z_to_position,
 )
 from mtbl_valuations.engine.pools import (
@@ -300,6 +302,19 @@ def _run_trp_valuation_inner(
     hitter_pools = calc_pool_dollars_per_z(hitter_pools)
     distribute_pool_dollars(hitter_pools, store_per_position=True)
 
+    # Phase 5 finalization swap-pass: rank-by-z and rank-by-dollar can
+    # diverge when ``$/Z`` weighting interacts with category mix. If any
+    # RLP player out-prices the lowest rostered, swap the pair, refresh
+    # every pool's averages / settled z / dollar-proxy rank, and re-run
+    # Phase 5. Loop until stable.
+    swap_count = _resolve_hitter_dollar_misallocations(
+        hitter_pools, league_budget, budget_config, league_settings
+    )
+    if swap_count:
+        print(
+            f"  Phase 5 finalization: resolved {swap_count} dollar mis-allocations"
+        )
+
     # Phase 5 budget snapshot — one log per pool with category budgets,
     # $/Z, baseline shifts and per-player dollars. league_raw / league_budget
     # are SUMS across every rostered hitter / every pool's budget across the
@@ -469,6 +484,79 @@ def _run_trp_valuation_inner(
     hitter_valuations = build_player_valuations(hitter_pools)
     pitcher_valuations = build_player_valuations(sp_pool | rp_pool)
     return hitter_valuations, pitcher_valuations
+
+
+# Hitter pools handled by the Phase 5 swap-pass. UTIL is included
+# because Phase 4c sets primary_position=UTIL on every UTIL pool player
+# regardless of tier, so swapping within UTIL doesn't introduce
+# primary_position drift — the swap just moves a player between UTIL's
+# own rostered and replacement tiers.
+_SWAP_PASS_POSITIONS = frozenset({"C", "1B", "2B", "3B", "SS", "OF", "UTIL"})
+
+
+def _resolve_hitter_dollar_misallocations(
+    hitter_pools: dict[str, PositionPool],
+    league_budget: LeagueBudget,
+    budget_config: dict[str, Any],
+    league_settings: dict[str, Any],
+    max_passes: int = 30,
+) -> int:
+    """Phase 5 finalization: pair-swap any rostered/RLP players where the
+    RLP player out-prices the lowest rostered, then refresh derived pool
+    state and re-run Phase 5 dollar distribution. Loop until stable.
+
+    Returns the total number of swaps performed across all passes.
+    """
+
+    def dollars_of(player: Player, pos: str) -> float:
+        pv = player.valuation.valuations_by_position.get(pos)
+        return pv.total_dollars if pv else player.valuation.total_dollars
+
+    total_swaps = 0
+    for _ in range(max_passes):
+        any_swap = False
+        for pos in _SWAP_PASS_POSITIONS:
+            pool = hitter_pools.get(pos)
+            if pool is None or not pool.rostered_players or not pool.replacement_players:
+                continue
+            rost_min = min(
+                pool.rostered_players, key=lambda p: dollars_of(p, pos)
+            )
+            rlp_max = max(
+                pool.replacement_players, key=lambda p: dollars_of(p, pos)
+            )
+            if dollars_of(rlp_max, pos) > dollars_of(rost_min, pos):
+                pool.rostered_players.remove(rost_min)
+                pool.replacement_players.remove(rlp_max)
+                pool.rostered_players.append(rlp_max)
+                pool.replacement_players.append(rost_min)
+                any_swap = True
+                total_swaps += 1
+
+        if not any_swap:
+            return total_swaps
+
+        # Refresh derived state for every swappable pool. UTIL is left as
+        # Phase 4 settled it, but it still participates in the Phase 5
+        # cross-pool allocation below since other pools' rostered changed.
+        for pos in _SWAP_PASS_POSITIONS:
+            pool = hitter_pools.get(pos)
+            if pool is None:
+                continue
+            recompute_pool_z_in_place(
+                pool,
+                hitter_pools,
+                budget_config,
+                league_settings,
+                per_position=True,
+            )
+
+        # Re-run the dollar math against the new rostered compositions.
+        allocate_position_budgets(hitter_pools, league_budget, budget_config)
+        calc_pool_dollars_per_z(hitter_pools)
+        distribute_pool_dollars(hitter_pools, store_per_position=True)
+
+    return total_swaps
 
 
 def run_all_valuations(

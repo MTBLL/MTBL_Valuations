@@ -106,8 +106,9 @@ def iterate_to_convergence_global(
                 min_z = min(rost_raw) if rost_raw else 0.0
                 pool.z_baseline_shift[cat] = max(0.0, -min_z)
 
-            # Step 3c: store SETTLED z per category.
-            cat_weights = _cat_weights_for(pool.role, budget_config)
+            # Step 3c: store SETTLED z. total_z is the *sum* of settled
+            # per-cat z's — the intuitive "production above replacement"
+            # number that shows up in logs / JSON / CSVs.
             for player in all_pool_players:
                 rz = raw_z[player.id]
                 settled: dict[str, float] = {
@@ -115,13 +116,10 @@ def iterate_to_convergence_global(
                     for cat in categories
                 }
                 player.valuation.normalized_z = settled
+                player.valuation.total_z = sum(settled.values())
 
             # Step 3d: ``total_pool_z`` from current rostered + per-cat
-            # ``$/Z`` proxy that includes cross-pool production share. Rank
-            # score = sum_c settled_z[c] * $/Z_proxy[c] — proportional to
-            # the actual Phase 5 dollar value within this pool, so tier
-            # assignment tracks dollar ordering and ``min(rostered $) >=
-            # max(RLP $)`` holds at convergence.
+            # ``$/Z`` proxy that includes cross-pool production share.
             pool.total_pool_z = {
                 c: sum(p.valuation.normalized_z.get(c, 0.0) for p in pool.rostered_players)
                 for c in categories
@@ -129,17 +127,20 @@ def iterate_to_convergence_global(
             dollars_per_z_proxy = _compute_dollars_per_z_proxy(
                 pool, pools, budget_config
             )
-            for player in all_pool_players:
-                z = player.valuation.normalized_z
-                player.valuation.total_z = sum(
+
+            # Step 5: Re-rank by the per-pool dollar proxy (not total_z) —
+            # ``sum_c settled_z[c] * $/Z_proxy[c]`` is proportional to the
+            # actual Phase 5 dollar value within this pool, so tier
+            # assignment tracks dollar ordering. total_z stays the
+            # intuitive sum for downstream display.
+            def _rank_global(p: Player) -> float:
+                z = p.valuation.normalized_z
+                return sum(
                     z.get(c, 0.0) * dollars_per_z_proxy.get(c, 0.0)
                     for c in categories
                 )
 
-            # Step 5: Re-rank by total Z (the per-pool dollar proxy)
-            all_pool_players = sorted(
-                all_pool_players, key=lambda p: p.valuation.total_z, reverse=True
-            )
+            all_pool_players = sorted(all_pool_players, key=_rank_global, reverse=True)
 
             # Step 6: Reassign tiers based on new ranking
             new_rostered_tier = all_pool_players[: pool.roster_slots]
@@ -297,8 +298,8 @@ def iterate_to_convergence_per_position(
                 min_z = min(rost_raw) if rost_raw else 0.0
                 pool.z_baseline_shift[cat] = max(0.0, -min_z)
 
-            # Step 3c: store SETTLED z per category.
-            cat_weights = _cat_weights_for(pool.role, budget_config)
+            # Step 3c: store SETTLED z. total_z is the *sum* of settled
+            # per-cat z's (intuitive). Rank uses a separate inline proxy.
             for player in all_pool_players:
                 rz = raw_z[player.id]
                 settled: dict[str, float] = {
@@ -308,12 +309,10 @@ def iterate_to_convergence_per_position(
                 _ensure_position_valuation(player, pos)
                 pv = player.valuation.valuations_by_position[pos]
                 pv.normalized_z = settled
+                pv.total_z = sum(settled.values())
 
             # Step 3d: per-pool dollar proxy — same approach as the global
-            # path but reading per-position normalized_z. Within Phase 4b
-            # the pools dict only contains UTIL, so the proxy collapses to
-            # cat_weight / total_pool_z (production share = 1.0). UTIL gets
-            # re-balanced against the full hitter pools at Phase 5.
+            # path but reading per-position normalized_z.
             pool.total_pool_z = {
                 c: sum(
                     p.valuation.valuations_by_position[pos].normalized_z.get(c, 0.0)
@@ -325,18 +324,19 @@ def iterate_to_convergence_per_position(
             dollars_per_z_proxy = _compute_dollars_per_z_proxy(
                 pool, pools, budget_config
             )
-            for player in all_pool_players:
-                pv = player.valuation.valuations_by_position[pos]
-                pv.total_z = sum(
-                    pv.normalized_z.get(c, 0.0) * dollars_per_z_proxy.get(c, 0.0)
+
+            # Step 5: Re-rank by per-pool dollar proxy (inline) so tier
+            # assignment tracks dollar ordering. total_z (= sum) is for
+            # display only.
+            def _rank_per_position(p: Player) -> float:
+                pvz = p.valuation.valuations_by_position[pos].normalized_z
+                return sum(
+                    pvz.get(c, 0.0) * dollars_per_z_proxy.get(c, 0.0)
                     for c in categories
                 )
 
-            # Step 5: Re-rank by total Z (per-pool dollar proxy)
             all_pool_players = sorted(
-                all_pool_players,
-                key=lambda p: p.valuation.valuations_by_position[pos].total_z,
-                reverse=True,
+                all_pool_players, key=_rank_per_position, reverse=True
             )
 
             # Store position rank for each player
@@ -821,6 +821,110 @@ def _observe_iter(
     recent.append(h)
     if len(recent) > 4:
         recent.pop(0)
+
+
+def recompute_pool_z_in_place(
+    pool: PositionPool,
+    pools: dict[str, PositionPool],
+    budget_config: dict[str, Any],
+    league_settings: dict[str, Any],
+    per_position: bool,
+) -> None:
+    """Refresh a pool's derived state — rostered-tier stdev, replacement
+    raw mean, per-cat baseline shift, per-player settled z, total_pool_z,
+    and the dollar-proxy ``total_z`` rank metric — for the pool's CURRENT
+    tier composition.
+
+    Does NOT re-rank or swap players. Used by the Phase 5 swap-pass after
+    a manual rostered <-> RLP swap so dollars can be re-computed against
+    the new tier shape without the iteration loop trying to undo the swap.
+    """
+    categories = get_categories(pool.role, league_settings)
+    pos = pool.position
+
+    rostered = [p for p in pool.rostered_players if hasattr(p, "stats")]
+    rlp_tier = [p for p in pool.replacement_players if hasattr(p, "stats")]
+    below = [p for p in pool.below_replacement if hasattr(p, "stats")]
+    all_pool_players = rostered + rlp_tier + below
+
+    pool.rostered_tier_stdevs = {
+        c: _safe_stdev([get_player_stat(p, c) for p in rostered]) for c in categories
+    }
+    pool.rlp_raw_avg = {
+        c: _safe_mean(get_player_stat(p, c) for p in rlp_tier) for c in categories
+    }
+
+    raw_z: dict[str, dict[str, float]] = {}
+    for p in all_pool_players:
+        zd: dict[str, float] = {}
+        for c in categories:
+            x = get_player_stat(p, c)
+            mu = pool.rlp_raw_avg.get(c, 0.0)
+            sd = pool.rostered_tier_stdevs.get(c, 0.0)
+            delta = (x - mu) if c not in ("ERA", "WHIP") else (mu - x)
+            zd[c] = (delta / sd) if sd else 0.0
+        raw_z[p.id] = zd
+    pool.z_baseline_shift = {}
+    for c in categories:
+        rost_raw = [raw_z[p.id][c] for p in pool.rostered_players if p.id in raw_z]
+        min_z = min(rost_raw) if rost_raw else 0.0
+        pool.z_baseline_shift[c] = max(0.0, -min_z)
+
+    for p in all_pool_players:
+        settled = {
+            c: max(0.0, raw_z[p.id][c] + pool.z_baseline_shift[c])
+            for c in categories
+        }
+        if per_position:
+            _ensure_position_valuation(p, pos)
+            pv = p.valuation.valuations_by_position[pos]
+            pv.normalized_z = settled
+        # Always also mirror to top-level: ``calc_pool_dollars_per_z``
+        # reads ``player.valuation.normalized_z`` regardless of per_position
+        # mode, so per_position swap-pass refreshes must keep top-level in
+        # sync to preserve budget conservation across pools.
+        p.valuation.normalized_z = settled
+
+    if per_position:
+        pool.total_pool_z = {
+            c: sum(
+                p.valuation.valuations_by_position[pos].normalized_z.get(c, 0.0)
+                for p in pool.rostered_players
+                if pos in p.valuation.valuations_by_position
+            )
+            for c in categories
+        }
+    else:
+        pool.total_pool_z = {
+            c: sum(p.valuation.normalized_z.get(c, 0.0) for p in pool.rostered_players)
+            for c in categories
+        }
+
+    # total_z is the intuitive sum of settled per-cat z's. The dollar-
+    # proxy rank metric is used inline during the iter loop sort; this
+    # recompute step doesn't re-rank (tier composition is locked by the
+    # swap-pass), so we just store the sum here for display.
+    for p in all_pool_players:
+        if per_position:
+            pv = p.valuation.valuations_by_position[pos]
+            pv.total_z = sum(pv.normalized_z.values())
+        # Mirror to top-level so downstream consumers (writers,
+        # build_player_valuations, validators) see consistent values.
+        p.valuation.total_z = sum(p.valuation.normalized_z.values())
+
+    if per_position:
+        assign_player_tiers_per_position(pool)
+        # Mirror tier flag to top-level too (writers / downstream read
+        # player.valuation.tier; without this mirror after a swap the
+        # top-level tier stays stale at Phase 3d's value).
+        for p in pool.rostered_players:
+            p.valuation.tier = "ROSTERED"
+        for p in pool.replacement_players:
+            p.valuation.tier = "REPLACEMENT"
+        for p in pool.below_replacement:
+            p.valuation.tier = "BELOW_REPLACEMENT"
+    else:
+        assign_player_tiers_global(pool)
 
 
 def _settle_pools(

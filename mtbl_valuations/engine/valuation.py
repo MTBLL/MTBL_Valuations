@@ -201,8 +201,15 @@ def distribute_player_dollars(
     Returns:
         Dictionary of dollar values per category
     """
-    if store_in_position_valuation and pool.position in player.valuation.valuations_by_position:
-        normalized_z = player.valuation.valuations_by_position[pool.position].normalized_z
+    # Prefer per-position normalized_z when present, regardless of the
+    # store flag. This keeps the read source symmetric with
+    # ``calc_pool_dollars_per_z`` so $/Z calibration and per-player dollar
+    # distribution agree — otherwise cross-pool players whose top-level
+    # ``normalized_z`` was set by another pool's recompute would distribute
+    # against a different z than the $/Z calibration used.
+    pv = player.valuation.valuations_by_position.get(pool.position)
+    if pv is not None and pv.normalized_z:
+        normalized_z = pv.normalized_z
     else:
         normalized_z = player.valuation.normalized_z
 
