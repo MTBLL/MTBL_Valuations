@@ -106,11 +106,7 @@ def iterate_to_convergence_global(
                 min_z = min(rost_raw) if rost_raw else 0.0
                 pool.z_baseline_shift[cat] = max(0.0, -min_z)
 
-            # Step 3c: store SETTLED z per category. total_z is the
-            # **category-weighted** settled sum — the same rank metric used
-            # for tier assignment. cat_weight is the static proxy for $/Z
-            # (unknown until Phase 5), which keeps tier order aligned with
-            # the eventual dollar ordering.
+            # Step 3c: store SETTLED z per category.
             cat_weights = _cat_weights_for(pool.role, budget_config)
             for player in all_pool_players:
                 rz = raw_z[player.id]
@@ -119,11 +115,28 @@ def iterate_to_convergence_global(
                     for cat in categories
                 }
                 player.valuation.normalized_z = settled
+
+            # Step 3d: ``total_pool_z`` from current rostered + per-cat
+            # ``$/Z`` proxy that includes cross-pool production share. Rank
+            # score = sum_c settled_z[c] * $/Z_proxy[c] — proportional to
+            # the actual Phase 5 dollar value within this pool, so tier
+            # assignment tracks dollar ordering and ``min(rostered $) >=
+            # max(RLP $)`` holds at convergence.
+            pool.total_pool_z = {
+                c: sum(p.valuation.normalized_z.get(c, 0.0) for p in pool.rostered_players)
+                for c in categories
+            }
+            dollars_per_z_proxy = _compute_dollars_per_z_proxy(
+                pool, pools, budget_config
+            )
+            for player in all_pool_players:
+                z = player.valuation.normalized_z
                 player.valuation.total_z = sum(
-                    settled[c] * cat_weights.get(c, 0.0) for c in categories
+                    z.get(c, 0.0) * dollars_per_z_proxy.get(c, 0.0)
+                    for c in categories
                 )
 
-            # Step 5: Re-rank by total Z (now the weighted settled total)
+            # Step 5: Re-rank by total Z (the per-pool dollar proxy)
             all_pool_players = sorted(
                 all_pool_players, key=lambda p: p.valuation.total_z, reverse=True
             )
@@ -284,7 +297,7 @@ def iterate_to_convergence_per_position(
                 min_z = min(rost_raw) if rost_raw else 0.0
                 pool.z_baseline_shift[cat] = max(0.0, -min_z)
 
-            # Step 3c: store SETTLED z. total_z is the weighted settled sum.
+            # Step 3c: store SETTLED z per category.
             cat_weights = _cat_weights_for(pool.role, budget_config)
             for player in all_pool_players:
                 rz = raw_z[player.id]
@@ -295,11 +308,31 @@ def iterate_to_convergence_per_position(
                 _ensure_position_valuation(player, pos)
                 pv = player.valuation.valuations_by_position[pos]
                 pv.normalized_z = settled
+
+            # Step 3d: per-pool dollar proxy — same approach as the global
+            # path but reading per-position normalized_z. Within Phase 4b
+            # the pools dict only contains UTIL, so the proxy collapses to
+            # cat_weight / total_pool_z (production share = 1.0). UTIL gets
+            # re-balanced against the full hitter pools at Phase 5.
+            pool.total_pool_z = {
+                c: sum(
+                    p.valuation.valuations_by_position[pos].normalized_z.get(c, 0.0)
+                    for p in pool.rostered_players
+                    if pos in p.valuation.valuations_by_position
+                )
+                for c in categories
+            }
+            dollars_per_z_proxy = _compute_dollars_per_z_proxy(
+                pool, pools, budget_config
+            )
+            for player in all_pool_players:
+                pv = player.valuation.valuations_by_position[pos]
                 pv.total_z = sum(
-                    settled[c] * cat_weights.get(c, 0.0) for c in categories
+                    pv.normalized_z.get(c, 0.0) * dollars_per_z_proxy.get(c, 0.0)
+                    for c in categories
                 )
 
-            # Step 5: Re-rank by total Z (weighted settled total).
+            # Step 5: Re-rank by total Z (per-pool dollar proxy)
             all_pool_players = sorted(
                 all_pool_players,
                 key=lambda p: p.valuation.valuations_by_position[pos].total_z,
@@ -532,6 +565,86 @@ def _store_z_scores_per_position(
     _ensure_position_valuation(player, pos)
     player.valuation.valuations_by_position[pos].normalized_z = normalized_z
     player.valuation.valuations_by_position[pos].total_z = total_z
+
+
+def _compute_dollars_per_z_proxy(
+    pool: PositionPool,
+    pools: dict[str, PositionPool],
+    budget_config: dict[str, Any],
+) -> dict[str, float]:
+    """Per-cat ``$/Z`` proxy used as the in-iter rank metric.
+
+    True dollar value = ``sum_c settled_z[c] * pool_budget[c] / total_pool_z[c]``
+    where ``pool_budget[c] = cat_weight[c] * pool_production_share[c]``
+    (modulo a per-pool constant that doesn't affect ranking).
+
+    ``pool_production_share[c]`` is per-category and depends on cross-pool
+    state, so it can only be computed when the full hitter-pools dict is
+    available. For UTIL's Phase 4b iter (single-pool dict), the share
+    collapses to 1.0 and the proxy reduces to ``cat_weight / total_pool_z`` —
+    the Path B weighted total in disguise. That's acceptable: UTIL gets
+    re-allocated against the full hitter pools at Phase 5.
+    """
+    cat_weights = _cat_weights_for(pool.role, budget_config)
+    if pool.role != "HITTER" or len(pools) <= 1:
+        eps = 1e-9
+        return {
+            c: cat_weights.get(c, 0.0) / max(pool.total_pool_z.get(c, 0.0), eps)
+            for c in cat_weights
+        }
+
+    counting = ["R", "HR", "RBI", "SBN"]
+    rate = ["OBP", "SLG"]
+    pa_weights = budget_config.get("pa_weights") or {}
+    default_pa = float(pa_weights.get("default", 600))
+
+    # Counting stats: production share by raw rostered totals.
+    total_raw: dict[str, float] = {
+        c: sum(
+            sum(get_player_stat(p, c) for p in op.rostered_players)
+            for op in pools.values()
+        )
+        for c in counting
+    }
+    pool_raw = {
+        c: sum(get_player_stat(p, c) for p in pool.rostered_players) for c in counting
+    }
+    share: dict[str, float] = {
+        c: (pool_raw[c] / total_raw[c]) if total_raw[c] > 0 else 0.0
+        for c in counting
+    }
+
+    # Rate stats: PA-weighted rostered mean / cross-pool total.
+    total_w_obp = 0.0
+    total_w_slg = 0.0
+    pool_w_obp = 0.0
+    pool_w_slg = 0.0
+    for opos, op in pools.items():
+        if not op.rostered_players:
+            continue
+        pa_w = float(pa_weights.get(opos, default_pa))
+        op_obp = sum(get_player_stat(p, "OBP") for p in op.rostered_players) / len(
+            op.rostered_players
+        )
+        op_slg = sum(get_player_stat(p, "SLG") for p in op.rostered_players) / len(
+            op.rostered_players
+        )
+        total_w_obp += op_obp * pa_w
+        total_w_slg += op_slg * pa_w
+        if op is pool:
+            pool_w_obp = op_obp * pa_w
+            pool_w_slg = op_slg * pa_w
+    share["OBP"] = pool_w_obp / total_w_obp if total_w_obp > 0 else 0.0
+    share["SLG"] = pool_w_slg / total_w_slg if total_w_slg > 0 else 0.0
+
+    # $/Z proxy = cat_weight * share / total_pool_z. The league_cat_budget
+    # factor cancels out for ranking purposes.
+    eps = 1e-9
+    return {
+        c: cat_weights.get(c, 0.0) * share.get(c, 0.0)
+        / max(pool.total_pool_z.get(c, 0.0), eps)
+        for c in counting + rate
+    }
 
 
 def _cat_weights_for(role: str, budget_config: dict[str, Any]) -> dict[str, float]:
