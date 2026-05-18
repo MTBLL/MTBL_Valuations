@@ -35,8 +35,9 @@ logging.addLevelName(INSIGHTS, "INSIGHTS")
 
 _LEVEL_NAMES = {"INSIGHTS": INSIGHTS, "DEBUG": logging.DEBUG}
 
-# Auto-warning thresholds
-_Z_OUTLIER = 4.0
+# Auto-warning thresholds (dollar/budget shape only — bare z-score
+# magnitudes are intentionally not flagged; elite players legitimately
+# clear z > 4 against the rough early-iter baselines).
 _BASELINE_SHIFT_LIMIT = 1.0
 
 # Phases that get per-iteration log files written. Anything else (pitcher
@@ -205,27 +206,6 @@ class IterationLogger:
                     cand = cur_other_by_id.get(pid)
                     name = cand.name if cand else pid
                     f.write(f"  - {name}: ROSTERED → out\n")
-
-            # z-outlier warnings
-            outliers = []
-            for p in pool.rostered_players:
-                z = self._z_total(p, pos, per_position)
-                if abs(z) > _Z_OUTLIER:
-                    outliers.append((p.name, z))
-            if outliers:
-                f.write("\nwarnings:\n")
-                for name, z in outliers:
-                    f.write(f"  z outlier: {name} total_z={z:.2f}\n")
-                    self.warnings.append(
-                        {
-                            "source": self.source,
-                            "phase": phase,
-                            "pos": pos,
-                            "iter": iteration,
-                            "kind": "z_outlier",
-                            "msg": f"{name} total_z={z:.2f}",
-                        }
-                    )
 
         self._prev_hash[key] = comp_hash
         self._prev_rostered_ids[key] = cur_ids
