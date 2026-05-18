@@ -35,7 +35,7 @@ from mtbl_valuations.engine.pools import (
     build_util_pool,
     dedupe_multi_position_players,
 )
-from mtbl_valuations.engine.valuation import distribute_pool_dollars
+from mtbl_valuations.engine.valuation import distribute_pool_dollars, get_player_stat
 from mtbl_valuations.io.exports import export_detailed_position_csvs
 from mtbl_valuations.io.current import (
     load_batters_current,
@@ -301,14 +301,28 @@ def _run_trp_valuation_inner(
     distribute_pool_dollars(hitter_pools, store_per_position=True)
 
     # Phase 5 budget snapshot — one log per pool with category budgets,
-    # $/Z, baseline shifts and per-player dollars.
+    # $/Z, baseline shifts and per-player dollars. league_raw is the mean
+    # of each category across every hitter loaded for this source — gives
+    # the per-pool log a "league context" anchor next to pos-pool mean.
     if iter_logger is not None:
+        hitter_cats = league_settings["batting_categories"]
+        n_hitters = len(hitter_players)
+        league_raw: dict[str, float] = (
+            {
+                c: sum(get_player_stat(hp.player, c) for hp in hitter_players)
+                / n_hitters
+                for c in hitter_cats
+            }
+            if n_hitters
+            else {}
+        )
         for pool in hitter_pools.values():
             iter_logger.log_budget(
                 pool,
                 "phase5-budget",
                 per_position=True,
-                categories=league_settings["batting_categories"],
+                categories=hitter_cats,
+                league_raw=league_raw,
             )
 
     # Validate position valuations are hydrated

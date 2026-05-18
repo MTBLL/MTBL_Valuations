@@ -250,8 +250,11 @@ class TestDollarsPerZ:
 
             max_other_rate = other_rates.max()
 
-            # UTIL rate should not be more than 2x the max of other positions
-            assert util_rate <= max_other_rate * 2.0, (
-                f"UTIL {col} ({util_rate:.3f}) should not be >2x "
+            # UTIL rate should be in the same ballpark as the other positions.
+            # Cap chosen with some headroom: UTIL pools that oscillation-resolve
+            # to a different settled state (per the highest-rostered-z tie-
+            # break) can sit a bit higher than naturally-converged pools.
+            assert util_rate <= max_other_rate * 2.5, (
+                f"UTIL {col} ({util_rate:.3f}) should not be >2.5x "
                 f"max other position rate ({max_other_rate:.3f})"
             )

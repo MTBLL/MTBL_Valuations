@@ -233,29 +233,34 @@ class IterationLogger:
     def _write_rlp_block(
         self, f: Any, pool: PositionPool, categories: list[str]
     ) -> None:
-        if self.level <= logging.DEBUG:
-            cols: dict[str, list[Any]] = {"cat": categories}
-            cols["rlp_raw_avg"] = [pool.rlp_raw_avg.get(c, 0.0) for c in categories]
-            cols["rostered_stdev"] = [
-                pool.rostered_tier_stdevs.get(c, 0.0) for c in categories
+        """Pool-level scale block: rostered-tier mean + stdev (the scale
+        basis for z-score calc) and replacement-tier raw mean (the z-score
+        baseline). Archetype / baseline-shift columns appear when populated.
+        """
+        rostered = pool.rostered_players
+        cols: dict[str, list[Any]] = {"cat": categories}
+        cols["rostered_mean"] = [
+            (sum(get_player_stat(p, c) for p in rostered) / len(rostered))
+            if rostered
+            else 0.0
+            for c in categories
+        ]
+        cols["rostered_stdev"] = [
+            pool.rostered_tier_stdevs.get(c, 0.0) for c in categories
+        ]
+        cols["rlp_raw_avg"] = [pool.rlp_raw_avg.get(c, 0.0) for c in categories]
+        if pool.rlp_archetype:
+            cols["archetype_raw"] = [
+                pool.rlp_archetype.get(c, 0.0) for c in categories
             ]
-            if pool.rlp_archetype:
-                cols["archetype_raw"] = [
-                    pool.rlp_archetype.get(c, 0.0) for c in categories
-                ]
-            if pool.rlp_z_baseline:
-                cols["rlp_z_baseline"] = [
-                    pool.rlp_z_baseline.get(c, 0.0) for c in categories
-                ]
-            arch = pd.DataFrame(cols)
-            f.write("RLP / scale:\n")
-            f.write(arch.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
-            f.write("\n\n")
-        else:
-            arch_str = "  ".join(
-                f"{c}={pool.rlp_raw_avg.get(c, 0.0):.3f}" for c in categories
-            )
-            f.write(f"rlp_raw_avg: {arch_str}\n\n")
+        if pool.rlp_z_baseline:
+            cols["rlp_z_baseline"] = [
+                pool.rlp_z_baseline.get(c, 0.0) for c in categories
+            ]
+        arch = pd.DataFrame(cols)
+        f.write("RLP / scale (rostered tier basis, replacement-tier baseline):\n")
+        f.write(arch.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+        f.write("\n\n")
 
     def _player_row(
         self,
@@ -271,16 +276,23 @@ class IterationLogger:
             "tier": tier_label,
             "total_z": self._z_total(p, pos, per_position),
         }
-        if self.level <= logging.DEBUG:
-            for c in categories:
-                row[f"{c}_raw"] = get_player_stat(p, c)
-                row[f"{c}_z"] = z_by_cat.get(c, 0.0)
+        for c in categories:
+            row[f"{c}_raw"] = get_player_stat(p, c)
+            row[f"{c}_z"] = z_by_cat.get(c, 0.0)
         return row
 
     # ----- convergence outcome ----------------------------------------
 
     def log_converged(
-        self, phase: str, pos: str, iters_run: int, converged: bool, max_iters: int
+        self,
+        phase: str,
+        pos: str,
+        iters_run: int,
+        converged: bool,
+        max_iters: int,
+        *,
+        oscillating: bool = False,
+        best_iter: int = 0,
     ) -> None:
         if phase not in _LOGGED_ITER_PHASES:
             return
@@ -291,9 +303,22 @@ class IterationLogger:
                 "pos": pos,
                 "iters_run": iters_run,
                 "converged": converged,
+                "oscillating": oscillating,
+                "best_iter": best_iter,
             }
         )
-        if not converged:
+        if oscillating:
+            self.warnings.append(
+                {
+                    "source": self.source,
+                    "phase": phase,
+                    "pos": pos,
+                    "iter": iters_run,
+                    "kind": "oscillation_resolved",
+                    "msg": f"period-2+ oscillation; restored best-z iter {best_iter}",
+                }
+            )
+        if not converged and not oscillating:
             self.warnings.append(
                 {
                     "source": self.source,
@@ -313,32 +338,51 @@ class IterationLogger:
         phase: str,
         per_position: bool,
         categories: list[str],
+        league_raw: dict[str, float] | None = None,
     ) -> None:
-        """Emit a Phase-5-style budget snapshot for one pool."""
+        """Emit a Phase-5-style budget snapshot for one pool.
+
+        Args:
+            league_raw: Optional source-wide mean per category (mean across
+                every hitter loaded for this valuation source). Useful for
+                comparing the pos-pool baseline against the broader universe.
+        """
         pos = pool.position
         out = self._pos_path(pos)
+        rostered = pool.rostered_players
         with open(out, "a") as f:
             f.write(self._banner(phase, pos, self.source, None))
             f.write(f"ts: {datetime.now().isoformat(timespec='seconds')}\n\n")
 
-            cat_df = pd.DataFrame(
-                {
-                    "cat": categories,
-                    "budget": [
-                        pool.category_budgets.get(c, 0.0) for c in categories
-                    ],
-                    "$/Z": [pool.dollars_per_z.get(c, 0.0) for c in categories],
-                    "total_pool_z": [
-                        pool.total_pool_z.get(c, 0.0) for c in categories
-                    ],
-                    "production_share": [
-                        pool.production_share.get(c, 0.0) for c in categories
-                    ],
-                    "z_baseline_shift": [
-                        pool.z_baseline_shift.get(c, 0.0) for c in categories
-                    ],
-                }
-            )
+            cat_table: dict[str, list[Any]] = {
+                "cat": categories,
+                "league_raw": [
+                    (league_raw or {}).get(c, 0.0) for c in categories
+                ],
+                "pos_raw": [
+                    (sum(get_player_stat(p, c) for p in rostered) / len(rostered))
+                    if rostered
+                    else 0.0
+                    for c in categories
+                ],
+                "stdev": [
+                    pool.rostered_tier_stdevs.get(c, 0.0) for c in categories
+                ],
+                "budget": [
+                    pool.category_budgets.get(c, 0.0) for c in categories
+                ],
+                "$/Z": [pool.dollars_per_z.get(c, 0.0) for c in categories],
+                "total_pool_z": [
+                    pool.total_pool_z.get(c, 0.0) for c in categories
+                ],
+                "production_share": [
+                    pool.production_share.get(c, 0.0) for c in categories
+                ],
+                "z_baseline_shift": [
+                    pool.z_baseline_shift.get(c, 0.0) for c in categories
+                ],
+            }
+            cat_df = pd.DataFrame(cat_table)
             f.write("category budgets:\n")
             f.write(cat_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
             f.write("\n\n")
@@ -393,9 +437,8 @@ class IterationLogger:
                     "total_z": z,
                     "total_$": td,
                 }
-                if self.level <= logging.DEBUG:
-                    for c in categories:
-                        row[f"{c}_$"] = dv.get(c, 0.0)
+                for c in categories:
+                    row[f"{c}_$"] = dv.get(c, 0.0)
                 rows.append(row)
             rows.sort(key=lambda r: -r["total_$"])
             if rows:

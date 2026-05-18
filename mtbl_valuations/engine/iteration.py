@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 import statistics
 from typing import Any, Iterable
 
@@ -37,11 +39,17 @@ def iterate_to_convergence_global(
     convergence_threshold = budget_config["convergence_threshold"]
     converged = False
     iteration = 0
+    histories = _init_pool_histories(pools)
 
     for iteration in range(1, max_iterations + 1):
         changes = 0
 
         for pos, pool in pools.items():
+            # Pool already settled (naturally converged or oscillation-frozen) —
+            # don't touch it again this run; further iterations would re-trigger
+            # the same flip-flop.
+            if histories[pos]["frozen"]:
+                continue
             categories = get_categories(pool.role, league_settings)
 
             # Define the player sets once (and as lists, because you loop multiple times)
@@ -130,6 +138,9 @@ def iterate_to_convergence_global(
                     categories=categories,
                 )
 
+            # Track best-z snapshot + oscillation status for this pool.
+            _observe_iter(pool, histories[pos], iteration, per_position=False)
+
         # Check convergence
         if changes <= convergence_threshold:
             print(f"Converged after {iteration} iterations")
@@ -138,11 +149,21 @@ def iterate_to_convergence_global(
     else:
         print(f"Max iterations ({max_iterations}) reached")
 
+    # Settle oscillating / max-iter pools on their highest-rostered-z snapshot.
+    _settle_pools(pools, histories, converged, per_position=False)
+
     iter_log = current_logger()
     if iter_log is not None:
         for pos in pools:
+            h = histories[pos]
             iter_log.log_converged(
-                current_phase(), pos, iteration, converged, max_iterations
+                current_phase(),
+                pos,
+                iteration,
+                converged,
+                max_iterations,
+                oscillating=h["oscillating"],
+                best_iter=h["best_iter"],
             )
 
     return pools
@@ -171,11 +192,14 @@ def iterate_to_convergence_per_position(
     convergence_threshold = budget_config["convergence_threshold"]
     converged = False
     iteration = 0
+    histories = _init_pool_histories(pools)
 
     for iteration in range(1, max_iterations + 1):
         changes = 0
 
         for pos, pool in pools.items():
+            if histories[pos]["frozen"]:
+                continue
             categories = get_categories(pool.role, league_settings)
 
             # Define the player sets once (and as lists, because you loop multiple times)
@@ -270,6 +294,9 @@ def iterate_to_convergence_per_position(
                     categories=categories,
                 )
 
+            # Track best-z snapshot + oscillation status for this pool.
+            _observe_iter(pool, histories[pos], iteration, per_position=True)
+
         # Check convergence
         if changes <= convergence_threshold:
             print(f"Converged after {iteration} iterations")
@@ -278,11 +305,20 @@ def iterate_to_convergence_per_position(
     else:
         print(f"Max iterations ({max_iterations}) reached")
 
+    _settle_pools(pools, histories, converged, per_position=True)
+
     iter_log = current_logger()
     if iter_log is not None:
         for pos in pools:
+            h = histories[pos]
             iter_log.log_converged(
-                current_phase(), pos, iteration, converged, max_iterations
+                current_phase(),
+                pos,
+                iteration,
+                converged,
+                max_iterations,
+                oscillating=h["oscillating"],
+                best_iter=h["best_iter"],
             )
 
     return pools
@@ -451,3 +487,151 @@ def _safe_stdev(nums: Iterable[float]) -> float:
     nums = list(nums)
     # statistics.stdev requires at least 2 points; decide what you want otherwise
     return statistics.stdev(nums) if len(nums) >= 2 else 0.0
+
+
+### ===  oscillation handling / best-snapshot restore  === ###
+
+
+def _composition_hash(pool: PositionPool) -> str:
+    """Stable, order-independent hash of the rostered-tier player IDs."""
+    return hashlib.sha1(
+        ",".join(sorted(p.id for p in pool.rostered_players)).encode()
+    ).hexdigest()[:10]
+
+
+def _rostered_z_sum(pool: PositionPool, per_position: bool) -> float:
+    """Sum of total_z across the rostered tier. This is the figure we
+    maximize when settling an oscillating pool on its best snapshot."""
+    pos = pool.position
+    if per_position:
+        return sum(
+            p.valuation.valuations_by_position[pos].total_z
+            for p in pool.rostered_players
+            if pos in p.valuation.valuations_by_position
+        )
+    return sum(p.valuation.total_z for p in pool.rostered_players)
+
+
+def _capture_pool_snapshot(
+    pool: PositionPool, per_position: bool
+) -> dict[str, Any]:
+    """Capture enough state to fully restore a pool to this iteration later."""
+    pos = pool.position
+    z_by_player: dict[str, dict[str, float]] = {}
+    for p in (
+        pool.rostered_players + pool.replacement_players + pool.below_replacement
+    ):
+        if per_position and pos in p.valuation.valuations_by_position:
+            z_by_player[p.id] = dict(
+                p.valuation.valuations_by_position[pos].normalized_z
+            )
+        else:
+            z_by_player[p.id] = dict(p.valuation.normalized_z)
+    return {
+        "rostered": list(pool.rostered_players),
+        "replacement": list(pool.replacement_players),
+        "below": list(pool.below_replacement),
+        "stdevs": dict(pool.rostered_tier_stdevs),
+        "rlp_raw_avg": dict(pool.rlp_raw_avg),
+        "z_by_player": z_by_player,
+    }
+
+
+def _restore_pool_snapshot(
+    pool: PositionPool, snapshot: dict[str, Any], per_position: bool
+) -> None:
+    """Restore a pool (tier composition + z-scores + scale) from a snapshot."""
+    pool.rostered_players = list(snapshot["rostered"])
+    pool.replacement_players = list(snapshot["replacement"])
+    pool.below_replacement = list(snapshot["below"])
+    pool.rostered_tier_stdevs = dict(snapshot["stdevs"])
+    pool.rlp_raw_avg = dict(snapshot["rlp_raw_avg"])
+    pos = pool.position
+    for p in (
+        pool.rostered_players + pool.replacement_players + pool.below_replacement
+    ):
+        z = snapshot["z_by_player"].get(p.id)
+        if z is None:
+            continue
+        if per_position:
+            _ensure_position_valuation(p, pos)
+            pv = p.valuation.valuations_by_position[pos]
+            pv.normalized_z = dict(z)
+            pv.total_z = sum(z.values())
+        else:
+            p.valuation.normalized_z = dict(z)
+            p.valuation.total_z = sum(z.values())
+    if per_position:
+        assign_player_tiers_per_position(pool)
+    else:
+        assign_player_tiers_global(pool)
+
+
+def _init_pool_histories(
+    pools: dict[str, PositionPool],
+) -> dict[str, dict[str, Any]]:
+    """Per-pool tracking state used by the iterate-to-convergence loops."""
+    return {
+        pos: {
+            "best_z_sum": -math.inf,
+            "best_snapshot": None,
+            "best_iter": 0,
+            "recent_hashes": [],
+            "frozen": False,
+            "naturally_converged": False,
+            "oscillating": False,
+        }
+        for pos in pools
+    }
+
+
+def _observe_iter(
+    pool: PositionPool,
+    history: dict[str, Any],
+    iteration: int,
+    per_position: bool,
+) -> None:
+    """Update per-pool history at the end of one iteration.
+
+    Updates the best-Z snapshot if this iteration improved on the prior best,
+    then classifies the pool's status by comparing this iteration's
+    composition hash to recent history:
+
+      - Same hash as the immediately previous iter -> naturally converged
+        (no movement); pool is frozen but no restoration will be needed.
+      - Same hash as an older iter (period >= 2) -> oscillating; pool is
+        frozen and will be restored to its best snapshot post-loop.
+    """
+    z_sum = _rostered_z_sum(pool, per_position)
+    if z_sum > history["best_z_sum"]:
+        history["best_z_sum"] = z_sum
+        history["best_iter"] = iteration
+        history["best_snapshot"] = _capture_pool_snapshot(pool, per_position)
+    h = _composition_hash(pool)
+    recent: list[str] = history["recent_hashes"]
+    if recent and h == recent[-1]:
+        history["naturally_converged"] = True
+        history["frozen"] = True
+    elif h in recent:
+        history["oscillating"] = True
+        history["frozen"] = True
+    recent.append(h)
+    if len(recent) > 4:
+        recent.pop(0)
+
+
+def _settle_pools(
+    pools: dict[str, PositionPool],
+    histories: dict[str, dict[str, Any]],
+    converged: bool,
+    per_position: bool,
+) -> None:
+    """After the iteration loop exits, restore each pool to its best
+    snapshot when the pool oscillated or the global loop never reached
+    natural convergence (max-iter exit)."""
+    for pos, pool in pools.items():
+        h = histories[pos]
+        if h["best_snapshot"] is None:
+            continue
+        if h["oscillating"] or (not converged and not h["naturally_converged"]):
+            _restore_pool_snapshot(pool, h["best_snapshot"], per_position)
