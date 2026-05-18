@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from mtbl_valuations.domain.models import PositionPool
+from mtbl_valuations.engine.iteration_logger import (
+    IterationLogger,
+    parse_iter_log_level,
+    pop_logger,
+    pop_phase,
+    push_logger,
+    push_phase,
+)
 from mtbl_valuations.engine.budget import (
     allocate_pool_budget,
     allocate_position_budgets,
@@ -78,6 +87,7 @@ def run_trp_valuation(
     budget_config_file: Path,
     output_dir: Path,
     source: ValuationSource = "projections",
+    iter_logger: IterationLogger | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """
     Run the complete TRP valuation pipeline for a single valuation source.
@@ -87,12 +97,45 @@ def run_trp_valuation(
         source: Which valuation source to value against — a Fangraphs
             projection set or the Statcast-derived "synthetic" source.
             Players with no data for the source are skipped by the loader.
+        iter_logger: Optional per-source IterationLogger. When provided, the
+            hitter convergence loops (Phase 3b / 3d / 4b) and the Phase 5
+            budget snapshot are dumped to per-position log files.
 
     Returns:
         (hitter_valuations, pitcher_valuations) - each a mapping of player id
         to the serialized valuation payload, for merging across sources.
     """
     print("=== TRP Valuation Engine ===\n")
+
+    # Bind the iteration logger to the ContextVar for the rest of this call.
+    # The iteration / convergence loops in engine/iteration.py read it via
+    # current_logger(); pitcher phases never push a phase, so their iter
+    # calls fall outside the logger's phase whitelist and no-op.
+    log_token = push_logger(iter_logger) if iter_logger is not None else None
+    try:
+        return _run_trp_valuation_inner(
+            batters_file,
+            pitchers_file,
+            league_file,
+            budget_config_file,
+            output_dir,
+            source,
+            iter_logger,
+        )
+    finally:
+        if log_token is not None:
+            pop_logger(log_token)
+
+
+def _run_trp_valuation_inner(
+    batters_file: Path,
+    pitchers_file: Path,
+    league_file: Path,
+    budget_config_file: Path,
+    output_dir: Path,
+    source: ValuationSource,
+    iter_logger: IterationLogger | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
 
     # ========================================================================
     # Phase 1: Initialize
@@ -174,11 +217,15 @@ def run_trp_valuation(
 
     # Phase 3b
     print("  Iterating hitter pools to convergence (per-pool tracking)...")
-    hitter_pools = iterate_to_convergence_per_position(
-        hitter_pools,
-        budget_config,
-        league_settings,
-    )
+    phase_token = push_phase("phase3b-iter")
+    try:
+        hitter_pools = iterate_to_convergence_per_position(
+            hitter_pools,
+            budget_config,
+            league_settings,
+        )
+    finally:
+        pop_phase(phase_token)
 
     # Phase 3c
     # Dedupe: assign multi-position players to their best-ranked position
@@ -192,11 +239,15 @@ def run_trp_valuation(
     # Re-iterate after dedupe since pool composition changed
     if dedupe_changes > 0:
         print("  Re-iterating after dedupe...")
-        hitter_pools = iterate_to_convergence_global(
-            hitter_pools,
-            budget_config,
-            league_settings,
-        )
+        phase_token = push_phase("phase3d-reiter")
+        try:
+            hitter_pools = iterate_to_convergence_global(
+                hitter_pools,
+                budget_config,
+                league_settings,
+            )
+        finally:
+            pop_phase(phase_token)
         # The global re-iteration refreshes only the top-level Z-scores;
         # mirror them into valuations_by_position so the per-position dollar
         # distribution in Phase 5 stays consistent with the $/Z rates.
@@ -221,11 +272,15 @@ def run_trp_valuation(
     # Phase 4b
     # Iterate UTIL pool
     print("  Iterating UTIL pool with composite RLP baseline...")
-    util_pool = iterate_to_convergence_per_position(
-        {"UTIL": util_pool},
-        budget_config,
-        league_settings,
-    )["UTIL"]
+    phase_token = push_phase("phase4b-util")
+    try:
+        util_pool = iterate_to_convergence_per_position(
+            {"UTIL": util_pool},
+            budget_config,
+            league_settings,
+        )["UTIL"]
+    finally:
+        pop_phase(phase_token)
 
     # Phase 4c
     # Finalize UTIL pool player valuations (primary position, Z-scores, tiers)
@@ -244,6 +299,17 @@ def run_trp_valuation(
     hitter_pools = allocate_position_budgets(hitter_pools, league_budget, budget_config)
     hitter_pools = calc_pool_dollars_per_z(hitter_pools)
     distribute_pool_dollars(hitter_pools, store_per_position=True)
+
+    # Phase 5 budget snapshot — one log per pool with category budgets,
+    # $/Z, baseline shifts and per-player dollars.
+    if iter_logger is not None:
+        for pool in hitter_pools.values():
+            iter_logger.log_budget(
+                pool,
+                "phase5-budget",
+                per_position=True,
+                categories=league_settings["batting_categories"],
+            )
 
     # Validate position valuations are hydrated
     validate_position_valuation_hydration(hitter_pools)
@@ -391,6 +457,8 @@ def run_all_valuations(
     league_file: Path,
     budget_config_file: Path,
     output_dir: Path,
+    iter_log_level: str | None = None,
+    logs_dir: Path = Path("logs"),
 ) -> None:
     """
     Run the TRP valuation for every Fangraphs projection source.
@@ -399,8 +467,25 @@ def run_all_valuations(
     (preseason/, updated/, ros/). A single merged ``hitters.json`` /
     ``pitchers.json`` is written at ``output_dir`` with each player's
     valuations keyed by source label.
+
+    Args:
+        iter_log_level: When ``"INSIGHTS"`` or ``"DEBUG"``, dumps per-iteration
+            tabular logs for the hitter convergence phases (3b / 3d / 4b) and
+            the Phase 5 budget snapshot, one file per (source, phase, pos).
+            ``None`` (the library default) writes no iteration logs — keeps
+            tests / programmatic callers quiet.
+        logs_dir: Root directory under which a timestamped run dir is
+            created when iter logging is enabled.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    log_level_num = parse_iter_log_level(iter_log_level)
+    iter_run_dir: Path | None = None
+    if log_level_num is not None:
+        run_stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        iter_run_dir = logs_dir / run_stamp
+        iter_run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Iteration logs: {iter_run_dir}  (level={iter_log_level})")
 
     hitter_vals_by_source: dict[str, dict[str, dict[str, Any]]] = {}
     pitcher_vals_by_source: dict[str, dict[str, dict[str, Any]]] = {}
@@ -409,6 +494,9 @@ def run_all_valuations(
         print(f"\n{'#' * 70}")
         print(f"# Projection source: {label}  ({source})")
         print(f"{'#' * 70}\n")
+        iter_logger: IterationLogger | None = None
+        if iter_run_dir is not None and log_level_num is not None:
+            iter_logger = IterationLogger(iter_run_dir, label, log_level_num)
         hitter_valuations, pitcher_valuations = run_trp_valuation(
             batters_file,
             pitchers_file,
@@ -416,9 +504,12 @@ def run_all_valuations(
             budget_config_file,
             output_dir / label,
             source,
+            iter_logger=iter_logger,
         )
         hitter_vals_by_source[label] = hitter_valuations
         pitcher_vals_by_source[label] = pitcher_valuations
+        if iter_logger is not None:
+            iter_logger.finalize_summary()
 
     # Merged enriched JSON across all sources
     print("\nWriting merged multi-source player JSON...")

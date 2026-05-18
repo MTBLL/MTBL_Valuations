@@ -6,6 +6,7 @@ import statistics
 from typing import Any, Iterable
 
 from mtbl_valuations.domain.models import Player, PositionPool, PositionValuation
+from mtbl_valuations.engine.iteration_logger import current_logger, current_phase
 from mtbl_valuations.engine.pools import rebuild_replacement_tier_on_z
 from mtbl_valuations.engine.valuation import (
     get_categories,
@@ -34,6 +35,8 @@ def iterate_to_convergence_global(
     """
     max_iterations = budget_config["max_iterations"]
     convergence_threshold = budget_config["convergence_threshold"]
+    converged = False
+    iteration = 0
 
     for iteration in range(1, max_iterations + 1):
         changes = 0
@@ -116,12 +119,31 @@ def iterate_to_convergence_global(
 
             assign_player_tiers_global(pool)
 
+            # Iteration-log hook (no-op when no logger is bound to context).
+            iter_log = current_logger()
+            if iter_log is not None:
+                iter_log.log_iter(
+                    pool,
+                    current_phase(),
+                    iteration,
+                    per_position=False,
+                    categories=categories,
+                )
+
         # Check convergence
         if changes <= convergence_threshold:
             print(f"Converged after {iteration} iterations")
+            converged = True
             break
     else:
         print(f"Max iterations ({max_iterations}) reached")
+
+    iter_log = current_logger()
+    if iter_log is not None:
+        for pos in pools:
+            iter_log.log_converged(
+                current_phase(), pos, iteration, converged, max_iterations
+            )
 
     return pools
 
@@ -147,6 +169,8 @@ def iterate_to_convergence_per_position(
     """
     max_iterations = budget_config["max_iterations"]
     convergence_threshold = budget_config["convergence_threshold"]
+    converged = False
+    iteration = 0
 
     for iteration in range(1, max_iterations + 1):
         changes = 0
@@ -235,12 +259,31 @@ def iterate_to_convergence_per_position(
 
             assign_player_tiers_per_position(pool)
 
+            # Iteration-log hook (no-op when no logger is bound to context).
+            iter_log = current_logger()
+            if iter_log is not None:
+                iter_log.log_iter(
+                    pool,
+                    current_phase(),
+                    iteration,
+                    per_position=True,
+                    categories=categories,
+                )
+
         # Check convergence
         if changes <= convergence_threshold:
             print(f"Converged after {iteration} iterations")
+            converged = True
             break
     else:
         print(f"Max iterations ({max_iterations}) reached")
+
+    iter_log = current_logger()
+    if iter_log is not None:
+        for pos in pools:
+            iter_log.log_converged(
+                current_phase(), pos, iteration, converged, max_iterations
+            )
 
     return pools
 

@@ -66,6 +66,22 @@ def cli() -> None:
     default=None,
     help="Set log level explicitly. Overrides -v/--verbose when given.",
 )
+@click.option(
+    "--iter-log-level",
+    type=click.Choice(["INSIGHTS", "DEBUG", "OFF"], case_sensitive=False),
+    default="INSIGHTS",
+    show_default=True,
+    help="Per-iteration log dump level for hitter convergence + budget phases. "
+    "INSIGHTS: players + tiers + total_z + RLP one-liner. "
+    "DEBUG: full per-category raw / z / $ tables. OFF: no per-iter dumps.",
+)
+@click.option(
+    "--logs-dir",
+    type=click.Path(path_type=Path),
+    default=Path("logs"),
+    show_default=True,
+    help="Root directory for iteration logs. A timestamped subdir is created per run.",
+)
 def hydrate(
     batters_file: Path,
     pitchers_file: Path,
@@ -74,6 +90,8 @@ def hydrate(
     output_dir: Path,
     verbose: int,
     log_level: str | None,
+    iter_log_level: str,
+    logs_dir: Path,
 ) -> None:
     """Run TRP (True Replacement Price) valuation engine.
 
@@ -84,6 +102,9 @@ def hydrate(
     hitters.json / pitchers.json holding every source.
     """
     configure_logging(verbosity=verbose, log_level=log_level)
+    iter_lvl: str | None = (
+        None if iter_log_level.upper() == "OFF" else iter_log_level.upper()
+    )
     try:
         run_all_valuations(
             batters_file,
@@ -91,6 +112,8 @@ def hydrate(
             league_file,
             budget_config,
             output_dir,
+            iter_log_level=iter_lvl,
+            logs_dir=logs_dir,
         )
     except KeyboardInterrupt:
         print("\n\n✗ Process interrupted by user\n", file=sys.stderr)

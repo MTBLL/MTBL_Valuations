@@ -6,4 +6,4 @@
 tests/.cache/
 .coverage
 .DS_Store
-.coverage
+logs/
