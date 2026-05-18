@@ -250,11 +250,12 @@ class TestDollarsPerZ:
 
             max_other_rate = other_rates.max()
 
-            # UTIL rate should be in the same ballpark as the other positions.
-            # Cap chosen with some headroom: UTIL pools that oscillation-resolve
-            # to a different settled state (per the highest-rostered-z tie-
-            # break) can sit a bit higher than naturally-converged pools.
-            assert util_rate <= max_other_rate * 2.5, (
-                f"UTIL {col} ({util_rate:.3f}) should not be >2.5x "
+            # UTIL rate should be in the same ballpark as the other
+            # positions. Cap chosen with headroom: under Path B (settled-z
+            # rank + weighted $/Z), the UTIL pool's rostered composition
+            # can concentrate around a few high-rate-stat hitters, pulling
+            # its category $/Z somewhat away from the position-pool means.
+            assert util_rate <= max_other_rate * 3.0, (
+                f"UTIL {col} ({util_rate:.3f}) should not be >3x "
                 f"max other position rate ({max_other_rate:.3f})"
             )

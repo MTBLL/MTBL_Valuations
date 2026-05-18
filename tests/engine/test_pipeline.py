@@ -260,17 +260,34 @@ class TestPipelinePhase4Util:
                     >= pool.rostered_players[i + 1].valuation.valuations_by_position["UTIL"].total_z
                     for i in range(len(pool.rostered_players) - 1)
                 )
-            # Check tier integrity only for players assigned to this pool
-            # (players with primary_position != this pool have been reassigned to UTIL)
-            for player in pool.rostered_players:
-                if player.valuation.primary_position == pos:
-                    assert player.valuation.tier == "ROSTERED", f"{pos} pool: {player.name} in rostered_players but tier={player.valuation.tier}"
-            for player in pool.replacement_players:
-                if player.valuation.primary_position == pos:
-                    assert player.valuation.tier == "REPLACEMENT", f"{pos} pool: {player.name} in replacement_players but tier={player.valuation.tier}"
-            for player in pool.below_replacement:
-                if player.valuation.primary_position == pos:
-                    assert player.valuation.tier == "BELOW_REPLACEMENT", f"{pos} pool: {player.name} in below_replacement but tier={player.valuation.tier}"
+            # Tier integrity. UTIL is iterated per_position so its tier flag
+            # lives in valuations_by_position[pos].tier (finalize copies that
+            # to top-level in Phase 4c, but this test exercises Phase 4b
+            # before finalize runs). For the per-position pools, fall back
+            # to the top-level tier with the primary_position guard.
+            def _tier(player, pos):
+                pv = player.valuation.valuations_by_position.get(pos)
+                return pv.tier if pv is not None else player.valuation.tier
+
+            if pos == "UTIL":
+                for player in pool.rostered_players:
+                    assert _tier(player, pos) == "ROSTERED", (
+                        f"UTIL pool: {player.name} rostered but tier={_tier(player, pos)}"
+                    )
+                for player in pool.replacement_players:
+                    assert _tier(player, pos) == "REPLACEMENT"
+                for player in pool.below_replacement:
+                    assert _tier(player, pos) == "BELOW_REPLACEMENT"
+            else:
+                for player in pool.rostered_players:
+                    if player.valuation.primary_position == pos:
+                        assert player.valuation.tier == "ROSTERED", f"{pos} pool: {player.name} in rostered_players but tier={player.valuation.tier}"
+                for player in pool.replacement_players:
+                    if player.valuation.primary_position == pos:
+                        assert player.valuation.tier == "REPLACEMENT", f"{pos} pool: {player.name} in replacement_players but tier={player.valuation.tier}"
+                for player in pool.below_replacement:
+                    if player.valuation.primary_position == pos:
+                        assert player.valuation.tier == "BELOW_REPLACEMENT", f"{pos} pool: {player.name} in below_replacement but tier={player.valuation.tier}"
 
 
 class TestBudgetsPhase5:

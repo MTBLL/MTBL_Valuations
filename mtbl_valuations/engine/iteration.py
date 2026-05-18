@@ -74,7 +74,8 @@ def iterate_to_convergence_global(
                     for cat in categories
                 }
 
-            # Step 3: compute above-replacement z per player + total
+            # Step 3a: compute RAW above-replacement z per player (in-memory)
+            raw_z: dict[str, dict[str, float]] = {}
             for player in all_pool_players:
                 z_by_cat: dict[str, float] = {}
                 for cat in categories:
@@ -90,10 +91,39 @@ def iterate_to_convergence_global(
                     )
                     z_score = baseline_delta / sd if sd else 0.0
                     z_by_cat[cat] = z_score
+                raw_z[player.id] = z_by_cat
 
-                _store_z_scores_global(player, z_by_cat)
+            # Step 3b: per-cat z_baseline_shift = -min(raw z) over CURRENT
+            # rostered tier. The shift lets every rostered player's per-cat
+            # contribution land at >=0 so dollars are non-negative.
+            pool.z_baseline_shift = {}
+            for cat in categories:
+                rost_raw = [
+                    raw_z[p.id][cat]
+                    for p in pool.rostered_players
+                    if p.id in raw_z
+                ]
+                min_z = min(rost_raw) if rost_raw else 0.0
+                pool.z_baseline_shift[cat] = max(0.0, -min_z)
 
-            # Step 5: Re-rank by total Z
+            # Step 3c: store SETTLED z per category. total_z is the
+            # **category-weighted** settled sum — the same rank metric used
+            # for tier assignment. cat_weight is the static proxy for $/Z
+            # (unknown until Phase 5), which keeps tier order aligned with
+            # the eventual dollar ordering.
+            cat_weights = _cat_weights_for(pool.role, budget_config)
+            for player in all_pool_players:
+                rz = raw_z[player.id]
+                settled: dict[str, float] = {
+                    cat: max(0.0, rz[cat] + pool.z_baseline_shift[cat])
+                    for cat in categories
+                }
+                player.valuation.normalized_z = settled
+                player.valuation.total_z = sum(
+                    settled[c] * cat_weights.get(c, 0.0) for c in categories
+                )
+
+            # Step 5: Re-rank by total Z (now the weighted settled total)
             all_pool_players = sorted(
                 all_pool_players, key=lambda p: p.valuation.total_z, reverse=True
             )
@@ -224,7 +254,8 @@ def iterate_to_convergence_per_position(
                     for cat in categories
                 }
 
-            # Step 3: compute above-replacement z per player + total
+            # Step 3a: compute RAW above-replacement z per player (in-memory)
+            raw_z: dict[str, dict[str, float]] = {}
             for player in all_pool_players:
                 z_by_cat: dict[str, float] = {}
                 for cat in categories:
@@ -240,10 +271,35 @@ def iterate_to_convergence_per_position(
                     )
                     z_score = baseline_delta / sd if sd else 0.0
                     z_by_cat[cat] = z_score
+                raw_z[player.id] = z_by_cat
 
-                _store_z_scores_per_position(player, pos, z_by_cat)
+            # Step 3b: per-cat z_baseline_shift from current rostered raw z.
+            pool.z_baseline_shift = {}
+            for cat in categories:
+                rost_raw = [
+                    raw_z[p.id][cat]
+                    for p in pool.rostered_players
+                    if p.id in raw_z
+                ]
+                min_z = min(rost_raw) if rost_raw else 0.0
+                pool.z_baseline_shift[cat] = max(0.0, -min_z)
 
-            # Step 5: Re-rank by total Z
+            # Step 3c: store SETTLED z. total_z is the weighted settled sum.
+            cat_weights = _cat_weights_for(pool.role, budget_config)
+            for player in all_pool_players:
+                rz = raw_z[player.id]
+                settled: dict[str, float] = {
+                    cat: max(0.0, rz[cat] + pool.z_baseline_shift[cat])
+                    for cat in categories
+                }
+                _ensure_position_valuation(player, pos)
+                pv = player.valuation.valuations_by_position[pos]
+                pv.normalized_z = settled
+                pv.total_z = sum(
+                    settled[c] * cat_weights.get(c, 0.0) for c in categories
+                )
+
+            # Step 5: Re-rank by total Z (weighted settled total).
             all_pool_players = sorted(
                 all_pool_players,
                 key=lambda p: p.valuation.valuations_by_position[pos].total_z,
@@ -478,6 +534,25 @@ def _store_z_scores_per_position(
     player.valuation.valuations_by_position[pos].total_z = total_z
 
 
+def _cat_weights_for(role: str, budget_config: dict[str, Any]) -> dict[str, float]:
+    """Return the per-category weights from budget_config for this pool's
+    role. Used as a static proxy for $/Z in the rank metric so tier
+    assignment tracks the dollar formula.
+
+    Pitchers split into SP / RP because their category weight tables differ
+    (e.g., SP weights QS, RP weights SVHD).
+    """
+    if role == "HITTER":
+        weights = budget_config.get("hitter_category_weights") or {}
+    elif role == "SP":
+        weights = budget_config.get("sp_category_weights") or {}
+    elif role == "RP":
+        weights = budget_config.get("rp_category_weights") or {}
+    else:
+        weights = {}
+    return {k: float(v) for k, v in weights.items()}
+
+
 def _safe_mean(nums: Iterable[float]) -> float:
     nums = list(nums)
     return statistics.mean(nums) if nums else 0.0
@@ -515,25 +590,34 @@ def _rostered_z_sum(pool: PositionPool, per_position: bool) -> float:
 def _capture_pool_snapshot(
     pool: PositionPool, per_position: bool
 ) -> dict[str, Any]:
-    """Capture enough state to fully restore a pool to this iteration later."""
+    """Capture enough state to fully restore a pool to this iteration later.
+
+    Captures total_z explicitly so restoration preserves the iter's rank
+    metric — under Path B total_z is the weighted settled sum, not the
+    naive sum of normalized_z values.
+    """
     pos = pool.position
     z_by_player: dict[str, dict[str, float]] = {}
+    total_z_by_player: dict[str, float] = {}
     for p in (
         pool.rostered_players + pool.replacement_players + pool.below_replacement
     ):
         if per_position and pos in p.valuation.valuations_by_position:
-            z_by_player[p.id] = dict(
-                p.valuation.valuations_by_position[pos].normalized_z
-            )
+            pv = p.valuation.valuations_by_position[pos]
+            z_by_player[p.id] = dict(pv.normalized_z)
+            total_z_by_player[p.id] = pv.total_z
         else:
             z_by_player[p.id] = dict(p.valuation.normalized_z)
+            total_z_by_player[p.id] = p.valuation.total_z
     return {
         "rostered": list(pool.rostered_players),
         "replacement": list(pool.replacement_players),
         "below": list(pool.below_replacement),
         "stdevs": dict(pool.rostered_tier_stdevs),
         "rlp_raw_avg": dict(pool.rlp_raw_avg),
+        "z_baseline_shift": dict(pool.z_baseline_shift),
         "z_by_player": z_by_player,
+        "total_z_by_player": total_z_by_player,
     }
 
 
@@ -546,21 +630,27 @@ def _restore_pool_snapshot(
     pool.below_replacement = list(snapshot["below"])
     pool.rostered_tier_stdevs = dict(snapshot["stdevs"])
     pool.rlp_raw_avg = dict(snapshot["rlp_raw_avg"])
+    pool.z_baseline_shift = dict(snapshot.get("z_baseline_shift") or {})
     pos = pool.position
+    total_z_by_player = snapshot.get("total_z_by_player") or {}
     for p in (
         pool.rostered_players + pool.replacement_players + pool.below_replacement
     ):
         z = snapshot["z_by_player"].get(p.id)
         if z is None:
             continue
+        # Restore the exact total_z that was in effect at snapshot time
+        # (the weighted settled sum under Path B; falls back to a plain sum
+        # for older snapshots without the field).
+        captured_total = total_z_by_player.get(p.id, sum(z.values()))
         if per_position:
             _ensure_position_valuation(p, pos)
             pv = p.valuation.valuations_by_position[pos]
             pv.normalized_z = dict(z)
-            pv.total_z = sum(z.values())
+            pv.total_z = captured_total
         else:
             p.valuation.normalized_z = dict(z)
-            p.valuation.total_z = sum(z.values())
+            p.valuation.total_z = captured_total
     if per_position:
         assign_player_tiers_per_position(pool)
     else:

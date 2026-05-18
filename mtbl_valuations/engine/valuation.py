@@ -184,8 +184,14 @@ def distribute_player_dollars(
     """
     Calculate dollar values per category for a player.
 
-    For rostered players: applies baseline shift to ensure minimum $1 value
-    For replacement/below players: applies direct $/Z without baseline shift
+    Path B contract: ``normalized_z`` is already settled (post-shift,
+    non-negative-clamped) by the iteration loop, and the SAME formula is
+    applied across every tier. This guarantees rostered prices ≥ RLP prices
+    for any two players sorted by settled total_z, because:
+
+      - Ranks: rostered = top N by settled total_z
+      - Dollars: ``$ = sum_c settled_z[c] * $/Z[c]``
+      - Both consume the same metric, so order is preserved.
 
     Args:
         player: The player to calculate dollars for
@@ -195,33 +201,16 @@ def distribute_player_dollars(
     Returns:
         Dictionary of dollar values per category
     """
-    dollar_values = {}
-
-    # Determine which Z-scores to use
     if store_in_position_valuation and pool.position in player.valuation.valuations_by_position:
         normalized_z = player.valuation.valuations_by_position[pool.position].normalized_z
     else:
         normalized_z = player.valuation.normalized_z
 
-    # Check if player is rostered in this pool
-    is_rostered = player in pool.rostered_players
+    dollar_values = {
+        category: z_value * pool.dollars_per_z.get(category, 0.0)
+        for category, z_value in normalized_z.items()
+    }
 
-    for category, z_value in normalized_z.items():
-        rate = pool.dollars_per_z.get(category, 0.0)
-
-        if is_rostered:
-            # Rostered players: apply baseline shift
-            baseline_shift = pool.z_baseline_shift.get(category, 0.0)
-            adjusted_z = z_value + baseline_shift
-            # Ensure no negative dollars
-            adjusted_z = max(0.0, adjusted_z)
-        else:
-            # Replacement/below players: direct $/Z (can be negative/zero)
-            adjusted_z = z_value
-
-        dollar_values[category] = adjusted_z * rate
-
-    # Store in position valuation if requested
     if store_in_position_valuation and pool.position in player.valuation.valuations_by_position:
         player.valuation.valuations_by_position[pool.position].dollar_values = dollar_values
         player.valuation.valuations_by_position[pool.position].total_dollars = sum(dollar_values.values())
