@@ -36,6 +36,49 @@ _META_SKIP = frozenset(
     }
 )
 
+# Fields where LOWER raw value = BETTER performance for the player's role.
+# pct_rnks for these get inverted so high pct_rnk consistently means
+# "good performance" regardless of stat direction.
+_HITTER_LOWER_BETTER = frozenset(
+    {
+        "K_pct",          # less strikeouts as a hitter
+        "swing_miss_pct", # whiff less
+        "B_SO",           # ESPN strikeouts counting
+    }
+)
+
+_PITCHER_LOWER_BETTER = frozenset(
+    {
+        # Earned runs / runs allowed
+        "ERA", "xERA",
+        # Walks + hits per innings pitched
+        "WHIP",
+        # Slash-line stats allowed
+        "AVG", "xAVG", "OBP", "xOBP", "SLG", "xSLG",
+        # wOBA against
+        "wOBA", "xwOBA",
+        # Batted-ball quality allowed
+        "BABIP", "ISO",
+        "barrels_total", "barrels_per_pa_pct", "barrels_per_bbe_pct",
+        "hardhit_pct",
+        "adj_exit_velo", "exit_velo",
+        "BBdist",
+        # Walks / hits / HRs surrendered (counts + rates)
+        "BB", "BB_pct", "BB/9", "BB%", "P_BB",
+        "H", "P_H",
+        "HR", "HR/9", "HR%", "P_HR",
+        "ER", "P_R", "R",
+        "L", "BLSV",
+        # Run-expectancy from the BATTER'S side against this pitcher
+        "batter_run_value_per_100",
+        "runs_all", "runs_chase", "runs_heart", "runs_shadow", "runs_waste",
+        # ESPN against-rate stats
+        "OBA", "OOBP",
+        # Sabermetric ERA estimators
+        "FIP", "xFIP",
+    }
+)
+
 
 def _is_rankable(key: str, value: Any) -> bool:
     """Decide whether a (key, value) pair in a savant sub-block should be
@@ -66,15 +109,24 @@ def _percentile_rank(sorted_values: list[float], value: float) -> float:
 def _enrich_records(
     records: list[dict[str, Any]],
     population_ids: set[str],
+    role: str,
 ) -> int:
     """For every numeric field in each player's ``stats.savant.<sub>``
     blocks, compute a pct_rnk against the population (subset of records
     with id in ``population_ids``) and inject ``{field}_pct_rnk`` back
     into the same block.
 
+    pct_rnks are oriented so **high pct_rnk = good performance for the
+    player's role**: fields in the role's "lower better" set (pitcher
+    ERA / wOBA against / etc., or hitter K_pct / swing_miss_pct) get
+    their pct_rnk inverted (1 - raw_pct_rnk).
+
     Returns the count of distinct (sub_block, field) pairs that were
     ranked — primarily for logging.
     """
+    lower_better = (
+        _HITTER_LOWER_BETTER if role == "HITTER" else _PITCHER_LOWER_BETTER
+    )
     # 1) Collect per-field population values.
     field_values: dict[tuple[str, str], list[float]] = {}
     for record in records:
@@ -112,9 +164,10 @@ def _enrich_records(
                 vals = field_values.get((sub_name, field))
                 if not vals:
                     continue
-                ranks_to_add[f"{field}_pct_rnk"] = round(
-                    _percentile_rank(vals, float(value)), 3
-                )
+                pct = _percentile_rank(vals, float(value))
+                if field in lower_better:
+                    pct = 1.0 - pct
+                ranks_to_add[f"{field}_pct_rnk"] = round(pct, 3)
             if ranks_to_add:
                 sub_block.update(ranks_to_add)
 
@@ -141,6 +194,6 @@ def inject_savant_pct_rnks(
     distinct field counts that ended up with pct_rnks. Useful for a
     one-line summary log.
     """
-    h = _enrich_records(batters_data, hitter_population_ids)
-    p = _enrich_records(pitchers_data, pitcher_population_ids)
+    h = _enrich_records(batters_data, hitter_population_ids, role="HITTER")
+    p = _enrich_records(pitchers_data, pitcher_population_ids, role="PITCHER")
     return h, p
