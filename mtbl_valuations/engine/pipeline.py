@@ -561,6 +561,13 @@ def _run_trp_valuation_inner(
 # regardless of tier, so swapping within UTIL doesn't introduce
 # primary_position drift — the swap just moves a player between UTIL's
 # own rostered and replacement tiers.
+#
+# Pitcher pools (SP / RP) deliberately do NOT get a swap-pass: they
+# allocate budget per-pool (no cross-pool weighted dollar proxy) and
+# the stub-projection PA/IP gate at the loader boundary keeps the iter
+# loop converging cleanly. Empirically: zero ``rlp_outprices`` warnings
+# across all 5 valuation sources. Add a swap-pass only if a future
+# source surfaces SP/RP mis-allocations.
 _SWAP_PASS_POSITIONS = frozenset({"C", "1B", "2B", "3B", "SS", "OF", "UTIL"})
 
 
