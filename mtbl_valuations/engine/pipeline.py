@@ -593,13 +593,23 @@ def _resolve_hitter_dollar_misallocations(
         pv = player.valuation.valuations_by_position.get(pos)
         return pv.total_dollars if pv else player.valuation.total_dollars
 
+    # Filter once: leagues with no UTIL slot (or any other missing
+    # configured swap position) drop here, so the inner loops don't need
+    # per-iteration None / empty-tier guards. Both tiers must be populated
+    # for the swap to be meaningful (min/max over empty lists raises).
+    swap_positions = [
+        pos
+        for pos in _SWAP_PASS_POSITIONS
+        if (pool := hitter_pools.get(pos)) is not None
+        and pool.rostered_players
+        and pool.replacement_players
+    ]
+
     total_swaps = 0
     for _ in range(max_passes):
         any_swap = False
-        for pos in _SWAP_PASS_POSITIONS:
-            pool = hitter_pools.get(pos)
-            if pool is None or not pool.rostered_players or not pool.replacement_players:
-                continue
+        for pos in swap_positions:
+            pool = hitter_pools[pos]
             rost_min = min(
                 pool.rostered_players, key=lambda p: dollars_of(p, pos)
             )
@@ -620,16 +630,12 @@ def _resolve_hitter_dollar_misallocations(
         # Refresh derived state for every swappable pool. UTIL is left as
         # Phase 4 settled it, but it still participates in the Phase 5
         # cross-pool allocation below since other pools' rostered changed.
-        for pos in _SWAP_PASS_POSITIONS:
-            pool = hitter_pools.get(pos)
-            if pool is None:
-                continue
+        for pos in swap_positions:
             recompute_pool_z_in_place(
-                pool,
+                hitter_pools[pos],
                 hitter_pools,
                 budget_config,
                 league_settings,
-                per_position=True,
             )
 
         # Re-run the dollar math against the new rostered compositions.

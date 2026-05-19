@@ -127,11 +127,9 @@ def test_recompute_pool_z_in_place_preserves_primary_position_top_level():
     # Refresh 1B first, then UTIL — the buggy code would leave UTIL's
     # normalized_z stomped onto the top-level. Correct behavior: top-level
     # reflects 1B (the primary).
-    recompute_pool_z_in_place(pool_1b, pools, budget_config, league_settings,
-                              per_position=True)
+    recompute_pool_z_in_place(pool_1b, pools, budget_config, league_settings)
     util_pre = dict(shared.valuation.normalized_z)
-    recompute_pool_z_in_place(pool_util, pools, budget_config, league_settings,
-                              per_position=True)
+    recompute_pool_z_in_place(pool_util, pools, budget_config, league_settings)
 
     # Per-position store has BOTH pools' z-scores.
     assert "1B" in shared.valuation.valuations_by_position
@@ -145,6 +143,48 @@ def test_recompute_pool_z_in_place_preserves_primary_position_top_level():
     assert shared.valuation.normalized_z == pv_1b.normalized_z
     assert shared.valuation.normalized_z == util_pre
     assert shared.valuation.total_z == pv_1b.total_z
+
+
+def test_compute_dollars_per_z_proxy_skips_empty_pool():
+    """An empty rostered pool participating in the cross-pool rate-share
+    calc must be skipped to avoid div-by-zero on its OBP/SLG average."""
+    from mtbl_valuations.engine.iteration import _compute_dollars_per_z_proxy
+
+    target = _make_hitter("t", runs=10.0)
+    target.valuation.normalized_z = {"R": 1.0, "OBP": 1.0, "SLG": 1.0}
+    pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
+    pool.rostered_players = [target]
+    pool.total_pool_z = {"R": 1.0, "OBP": 1.0, "SLG": 1.0}
+
+    empty = PositionPool(position="C", role="HITTER", roster_slots=1)
+    empty.rostered_players = []  # triggers the skip branch
+
+    pools = {"SS": pool, "C": empty}
+    budget_config = {
+        "hitter_category_weights": {"R": 0.5, "OBP": 0.25, "SLG": 0.25},
+        "pa_weights": {"default": 600},
+    }
+    # No crash + returns a dict keyed by every category.
+    out = _compute_dollars_per_z_proxy(pool, pools, budget_config)
+    assert set(out.keys()) >= {"R", "OBP", "SLG"}
+
+
+def test_settle_pools_skips_pool_with_no_snapshot():
+    """A pool that never produced a best snapshot (converged on iter 0)
+    must be silently skipped by _settle_pools."""
+    from mtbl_valuations.engine.iteration import _settle_pools
+
+    pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
+    pool.rostered_players = [_make_hitter("a", runs=10.0)]
+    histories = {
+        "SS": {
+            "best_snapshot": None,  # no snapshot ever taken
+            "oscillating": False,
+            "naturally_converged": True,
+        }
+    }
+    # Must not raise even though no restore is possible.
+    _settle_pools({"SS": pool}, histories, converged=True, per_position=True)
 
 
 def test_swap_pass_positions_is_deterministic_tuple():

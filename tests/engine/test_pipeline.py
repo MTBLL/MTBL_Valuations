@@ -116,6 +116,70 @@ class TestPipeline:
             assert set(rec["valuations"]).issubset(set(sources))
 
 
+class TestSwapPassUnit:
+    """Direct unit tests on ``_resolve_hitter_dollar_misallocations``."""
+
+    def test_returns_zero_when_no_swap_needed(self, league_settings, budget_config):
+        """Pool where every rostered player already out-prices every RLP
+        player triggers the no-swap path: function returns 0 on the first
+        pass without invoking any refresh."""
+        from mtbl_valuations.domain.models import (
+            HitterStats,
+            LeagueBudget,
+            Player,
+            PositionPool,
+            Valuation,
+        )
+        from mtbl_valuations.engine.pipeline import (
+            _resolve_hitter_dollar_misallocations,
+        )
+
+        def _mk(pid: str, dollars: float) -> Player:
+            v = Valuation()
+            v.total_dollars = dollars
+            return Player(
+                id=pid,
+                name=pid,
+                team="T",
+                positions=["SS"],
+                role="HITTER",
+                stats=HitterStats(
+                    pa=600,
+                    ab=540,
+                    r=80,
+                    hr=20,
+                    rbi=70,
+                    sbn=10,
+                    obp=0.350,
+                    slg=0.450,
+                ),
+                valuation=v,
+            )
+
+        # rostered player has higher dollars than the RLP candidate → no swap.
+        rost = _mk("rost", dollars=10.0)
+        rlp = _mk("rlp", dollars=2.0)
+        pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
+        pool.rostered_players = [rost]
+        pool.replacement_players = [rlp]
+
+        league_budget = LeagueBudget(
+            total=2600,
+            hitter_budget=1820,
+            pitcher_budget=780,
+            sp_budget=390,
+            rp_budget=390,
+        )
+
+        swaps = _resolve_hitter_dollar_misallocations(
+            {"SS": pool}, league_budget, budget_config, league_settings
+        )
+        assert swaps == 0
+        # Pool composition unchanged.
+        assert pool.rostered_players == [rost]
+        assert pool.replacement_players == [rlp]
+
+
 class TestPipelinePhase3RegularHitters:
     def test_pipeline_before_dedupe(self, converged_hitter_pools, league_settings):
         """Test that the pipeline at point Phase 3b."""

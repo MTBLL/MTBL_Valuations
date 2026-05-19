@@ -539,34 +539,6 @@ def assign_player_tiers_per_position(pool: PositionPool) -> None:
         player.valuation.valuations_by_position[pos].tier = "BELOW_REPLACEMENT"
 
 
-def _store_z_scores_global(player: Player, normalized_z: dict[str, float]) -> None:
-    """Store z-scores at top-level player.valuation (single-position mode).
-
-    Args:
-        player: Player to store z-scores for
-        normalized_z: Dictionary of category z-scores
-    """
-    total_z = sum(normalized_z.values())
-    player.valuation.normalized_z = normalized_z
-    player.valuation.total_z = total_z
-
-
-def _store_z_scores_per_position(
-    player: Player, pos: str, normalized_z: dict[str, float]
-) -> None:
-    """Store z-scores in valuations_by_position (multi-position mode).
-
-    Args:
-        player: Player to store z-scores for
-        pos: Position to store z-scores for
-        normalized_z: Dictionary of category z-scores
-    """
-    total_z = sum(normalized_z.values())
-    _ensure_position_valuation(player, pos)
-    player.valuation.valuations_by_position[pos].normalized_z = normalized_z
-    player.valuation.valuations_by_position[pos].total_z = total_z
-
-
 def _compute_dollars_per_z_proxy(
     pool: PositionPool,
     pools: dict[str, PositionPool],
@@ -655,14 +627,12 @@ def _cat_weights_for(role: str, budget_config: dict[str, Any]) -> dict[str, floa
     Pitchers split into SP / RP because their category weight tables differ
     (e.g., SP weights QS, RP weights SVHD).
     """
-    if role == "HITTER":
-        weights = budget_config.get("hitter_category_weights") or {}
-    elif role == "SP":
-        weights = budget_config.get("sp_category_weights") or {}
-    elif role == "RP":
-        weights = budget_config.get("rp_category_weights") or {}
-    else:
-        weights = {}
+    weights_key = {
+        "HITTER": "hitter_category_weights",
+        "SP": "sp_category_weights",
+        "RP": "rp_category_weights",
+    }[role]
+    weights = budget_config.get(weights_key) or {}
     return {k: float(v) for k, v in weights.items()}
 
 
@@ -749,9 +719,9 @@ def _restore_pool_snapshot(
     for p in (
         pool.rostered_players + pool.replacement_players + pool.below_replacement
     ):
-        z = snapshot["z_by_player"].get(p.id)
-        if z is None:
-            continue
+        # Snapshot's z_by_player is built from the same player list above
+        # (see _take_pool_snapshot), so direct indexing is safe.
+        z = snapshot["z_by_player"][p.id]
         # Restore the exact total_z that was in effect at snapshot time
         # (the weighted settled sum under Path B; falls back to a plain sum
         # for older snapshots without the field).
@@ -828,16 +798,17 @@ def recompute_pool_z_in_place(
     pools: dict[str, PositionPool],
     budget_config: dict[str, Any],
     league_settings: dict[str, Any],
-    per_position: bool,
 ) -> None:
     """Refresh a pool's derived state — rostered-tier stdev, replacement
     raw mean, per-cat baseline shift, per-player settled z, total_pool_z,
-    and the dollar-proxy ``total_z`` rank metric — for the pool's CURRENT
-    tier composition.
+    and tier flags — for the pool's CURRENT tier composition.
 
     Does NOT re-rank or swap players. Used by the Phase 5 swap-pass after
     a manual rostered <-> RLP swap so dollars can be re-computed against
     the new tier shape without the iteration loop trying to undo the swap.
+
+    Per-position only: the swap-pass is hitter-pool-specific, where every
+    player has a ``primary_position`` set and per-position valuations exist.
     """
     categories = get_categories(pool.role, league_settings)
     pos = pool.position
@@ -875,72 +846,47 @@ def recompute_pool_z_in_place(
             c: max(0.0, raw_z[p.id][c] + pool.z_baseline_shift[c])
             for c in categories
         }
-        if per_position:
-            _ensure_position_valuation(p, pos)
-            pv = p.valuation.valuations_by_position[pos]
-            pv.normalized_z = settled
-            # Multi-pool players (e.g. UTIL candidates also in a base pool)
-            # must NOT have their top-level normalized_z stomped by a
-            # non-primary pool's recompute — exported total_z / z_scores
-            # would otherwise reflect whichever pool ran last. Only mirror
-            # when this is the player's primary pool. ``calc_pool_dollars_per_z``
-            # already prefers ``valuations_by_position[pos]`` for the
-            # current pool, so budget conservation doesn't need the mirror.
-            if p.valuation.primary_position in ("", pos):
-                p.valuation.normalized_z = settled
-        else:
-            # Single-pool mode (pitcher pools, pre-dedupe global): no
-            # primary-position ambiguity, mirror unconditionally.
+        _ensure_position_valuation(p, pos)
+        pv = p.valuation.valuations_by_position[pos]
+        pv.normalized_z = settled
+        # Multi-pool players (e.g. UTIL candidates also in a base pool)
+        # must NOT have their top-level normalized_z stomped by a
+        # non-primary pool's recompute — exported total_z / z_scores
+        # would otherwise reflect whichever pool ran last. Only mirror
+        # when this is the player's primary pool. ``calc_pool_dollars_per_z``
+        # already prefers ``valuations_by_position[pos]`` for the
+        # current pool, so budget conservation doesn't need the mirror.
+        if p.valuation.primary_position in ("", pos):
             p.valuation.normalized_z = settled
 
-    if per_position:
-        pool.total_pool_z = {
-            c: sum(
-                p.valuation.valuations_by_position[pos].normalized_z.get(c, 0.0)
-                for p in pool.rostered_players
-                if pos in p.valuation.valuations_by_position
-            )
-            for c in categories
-        }
-    else:
-        pool.total_pool_z = {
-            c: sum(p.valuation.normalized_z.get(c, 0.0) for p in pool.rostered_players)
-            for c in categories
-        }
+    pool.total_pool_z = {
+        c: sum(
+            p.valuation.valuations_by_position[pos].normalized_z.get(c, 0.0)
+            for p in pool.rostered_players
+            if pos in p.valuation.valuations_by_position
+        )
+        for c in categories
+    }
 
-    # total_z is the intuitive sum of settled per-cat z's. The dollar-
-    # proxy rank metric is used inline during the iter loop sort; this
-    # recompute step doesn't re-rank (tier composition is locked by the
-    # swap-pass), so we just store the sum here for display.
+    # total_z is the intuitive sum of settled per-cat z's.
     for p in all_pool_players:
-        if per_position:
-            pv = p.valuation.valuations_by_position[pos]
-            pv.total_z = sum(pv.normalized_z.values())
-            # Mirror to top-level only for this pool's primary-position
-            # players (same reasoning as the normalized_z gate above).
-            if p.valuation.primary_position in ("", pos):
-                p.valuation.total_z = sum(pv.normalized_z.values())
-        else:
-            p.valuation.total_z = sum(p.valuation.normalized_z.values())
+        pv = p.valuation.valuations_by_position[pos]
+        pv.total_z = sum(pv.normalized_z.values())
+        if p.valuation.primary_position in ("", pos):
+            p.valuation.total_z = sum(pv.normalized_z.values())
 
-    if per_position:
-        assign_player_tiers_per_position(pool)
-        # Mirror tier flag to top-level too, but only for players whose
-        # primary position is THIS pool. Multi-pool players (e.g. a 1B
-        # also in UTIL) keep the tier from their primary pool's swap pass.
-        # Without this gate the exported tier would reflect whichever
-        # pool ran last in the (previously frozenset-ordered) swap loop.
-        for p in pool.rostered_players:
-            if p.valuation.primary_position in ("", pos):
-                p.valuation.tier = "ROSTERED"
-        for p in pool.replacement_players:
-            if p.valuation.primary_position in ("", pos):
-                p.valuation.tier = "REPLACEMENT"
-        for p in pool.below_replacement:
-            if p.valuation.primary_position in ("", pos):
-                p.valuation.tier = "BELOW_REPLACEMENT"
-    else:
-        assign_player_tiers_global(pool)
+    assign_player_tiers_per_position(pool)
+    # Mirror tier flag to top-level only for players whose primary
+    # position is THIS pool (same reasoning as the normalized_z gate).
+    for p in pool.rostered_players:
+        if p.valuation.primary_position in ("", pos):
+            p.valuation.tier = "ROSTERED"
+    for p in pool.replacement_players:
+        if p.valuation.primary_position in ("", pos):
+            p.valuation.tier = "REPLACEMENT"
+    for p in pool.below_replacement:
+        if p.valuation.primary_position in ("", pos):
+            p.valuation.tier = "BELOW_REPLACEMENT"
 
 
 def _settle_pools(

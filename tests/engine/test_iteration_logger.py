@@ -165,6 +165,19 @@ def test_log_iter_writes_banner_and_player_rows(logger: IterationLogger):
     assert "RLP / scale" in text
 
 
+def test_log_iter_includes_archetype_and_z_baseline_cols(logger: IterationLogger):
+    """When ``rlp_archetype`` and ``rlp_z_baseline`` are populated, the
+    RLP / scale block adds two extra columns."""
+    pool = _ss_pool()
+    pool.rlp_archetype = {"R": 50.0, "OBP": 0.300}
+    pool.rlp_z_baseline = {"R": -1.0, "OBP": -0.5}
+    logger.log_iter(pool, "phase3b-iter", iteration=0, per_position=False,
+                    categories=["R", "OBP"])
+    text = (logger.run_dir / "updated" / "SS.log").read_text()
+    assert "archetype_raw" in text
+    assert "rlp_z_baseline" in text
+
+
 def test_log_iter_tracks_composition_change(logger: IterationLogger):
     pool = _ss_pool()
     logger.log_iter(pool, "phase3b-iter", iteration=0, per_position=False,
