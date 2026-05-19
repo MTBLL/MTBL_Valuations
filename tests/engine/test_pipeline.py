@@ -59,6 +59,35 @@ class TestPipeline:
         assert (output_dir / "hitters.json").exists()
         assert (output_dir / "pitchers.json").exists()
 
+    def test_run_all_valuations_with_iter_logging_writes_logs(
+        self, batters_file, pitchers_file, league_file, budget_config_file, tmp_path
+    ):
+        """When ``iter_log_level`` is set, a timestamped logs dir is created
+        with per-source iteration files + a ``{source}_summary.log`` per source.
+        Covers the iter_logger branches inside the pipeline that the default
+        run silently skips."""
+        out_dir = tmp_path / "out"
+        logs_dir = tmp_path / "logs"
+        run_all_valuations(
+            batters_file,
+            pitchers_file,
+            league_file,
+            budget_config_file,
+            out_dir,
+            iter_log_level="INSIGHTS",
+            logs_dir=logs_dir,
+        )
+        # Exactly one timestamped run dir under logs_dir.
+        run_dirs = list(logs_dir.iterdir())
+        assert len(run_dirs) == 1
+        run_dir = run_dirs[0]
+        # Per-source summary files exist for every source we ran.
+        for label in ("preseason", "updated", "ros", "synthetic", "current"):
+            assert (run_dir / f"{label}_summary.log").exists()
+            # At least one position dump landed for the hitter convergence
+            # phases (SS is always populated in a 10-team league).
+            assert (run_dir / label / "SS.log").exists()
+
     def test_run_all_valuations_multi_source(
         self, batters_file, pitchers_file, league_file, budget_config_file, tmp_path
     ):

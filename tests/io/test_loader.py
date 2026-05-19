@@ -126,3 +126,41 @@ def test_load_budget_config_reads_fixture(fixtures_dir):
         raw = json.load(f)
 
     assert load_budget_config(budget_file) == raw
+
+
+# ---------- stub-projection PA/IP gate ----------------------------------
+
+
+def test_load_batters_min_projection_pa_filters_low_pa_records(batters_file):
+    """A min_projection_pa above the median PA should drop substantial rows
+    relative to the unfiltered load. Asserts the gate is wired up and the
+    skip-counter log path is hit."""
+    baseline = load_batters(batters_file, source="projs_updated")
+    gated = load_batters(batters_file, source="projs_updated", min_projection_pa=200.0)
+    assert len(gated) < len(baseline)
+    # Every retained hitter clears the threshold.
+    assert all(h.stats.pa >= 200.0 for h in gated)
+
+
+def test_load_batters_min_projection_pa_zero_keeps_everything(batters_file):
+    """A zero floor must be a no-op vs. the default load."""
+    baseline = load_batters(batters_file, source="projs_updated")
+    same = load_batters(batters_file, source="projs_updated", min_projection_pa=0.0)
+    assert len(baseline) == len(same)
+
+
+def test_load_pitchers_min_projection_ip_filters_low_ip_records(pitchers_file):
+    """A min_projection_ip floor should drop call-up / partial-season stubs."""
+    baseline = load_pitchers(pitchers_file, source="projs_updated")
+    gated = load_pitchers(
+        pitchers_file, source="projs_updated", min_projection_ip=30.0
+    )
+    assert len(gated) < len(baseline)
+    # Every retained pitcher clears the threshold (outs / 3 = IP).
+    assert all((p.stats.outs / 3.0) >= 30.0 for p in gated)
+
+
+def test_load_pitchers_min_projection_ip_zero_keeps_everything(pitchers_file):
+    baseline = load_pitchers(pitchers_file, source="projs_updated")
+    same = load_pitchers(pitchers_file, source="projs_updated", min_projection_ip=0.0)
+    assert len(baseline) == len(same)
