@@ -177,6 +177,22 @@ class TestSwapPassUnit:
         assert pool.rostered_players == [rost]
         assert pool.replacement_players == [rlp]
 
+    def test_sync_primary_skips_missing_pool(self):
+        """``_sync_primary_to_rostered_base_pool`` must tolerate leagues
+        whose hitter_pools dict is missing one of the configured base
+        positions (e.g. a league with no catcher slot)."""
+        from mtbl_valuations.domain.models import PositionPool
+        from mtbl_valuations.engine.pipeline import (
+            _sync_primary_to_rostered_base_pool,
+        )
+
+        # Only 1B is present — every other base position lookup returns
+        # None and the inner continue branch must fire.
+        pool_1b = PositionPool(position="1B", role="HITTER", roster_slots=1)
+        # Empty pool to make the function a no-op past the missing-pool
+        # guards; we're testing the guard itself, not any sync work.
+        _sync_primary_to_rostered_base_pool({"1B": pool_1b})
+
 
 class TestPipelinePhase3RegularHitters:
     def test_pipeline_before_dedupe(self, converged_hitter_pools, league_settings):
