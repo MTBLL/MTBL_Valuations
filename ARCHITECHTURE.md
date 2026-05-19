@@ -172,67 +172,77 @@ Loader/adapters should be responsible for upstream quirks (FanGraphs column nami
 
 ### Outputs
 
-The system produces multiple output files:
-
-**1. Player Valuations File** (`valuations.csv`) -- for quick debug and draft day quick looks
-
-```
-player_id: string
-name: string
-position: string (primary position used for valuation)
-role: string ("HITTER" | "SP" | "RP")
-total_z: float
-dollar_value: float
-z_R: float (hitters only)
-z_HR: float (hitters only)
-z_RBI: float (hitters only)
-z_SB: float (hitters only)
-z_OBP: float (hitters only)
-z_SLG: float (hitters only)
-z_IP: float (pitchers only)
-z_ERA: float (pitchers only)
-z_WHIP: float (pitchers only)
-z_K9: float (pitchers only)
-z_QS: float (SP only)
-z_SVHD: float (RP only)
-dollar_R: float (hitters only)
-dollar_HR: float (hitters only)
-... (dollar value per category)
-tier: string ("ROSTERED" | "REPLACEMENT" | "BELOW_REPLACEMENT")
-```
-
-**2. Position Summary File** (`position_summary.csv`) -- for quick debug and draft day quick looks
+The pipeline runs once per **valuation source** (`preseason`, `updated`,
+`ros`, `synthetic`, `current`) and writes two kinds of artifacts:
 
 ```
-position: string
-role: string
+<output-dir>/
+├── hitters.json                 // merged, all 5 sources
+├── pitchers.json                // merged, all 5 sources
+└── <source>/
+    └── position_summary.csv     // pool-level aggregates per source
+```
+
+Earlier iterations wrote per-source `valuations.csv`,
+`<pos>_detailed.csv`, and per-source `hitters.json` / `pitchers.json`.
+Those have been removed: every per-player field they exposed is already
+in the merged top-level JSON, none of them carried the Savant pct_rnk
+enrichments (which only exist on the merged JSON by design), and the
+duplication ate ~175 MB per run. The current layout is a strict
+information-preserving simplification.
+
+**1. Merged Hitters / Pitchers JSON** (`hitters.json`, `pitchers.json`)
+
+The canonical per-player output. Each record matches the upstream
+`batters_matched.json` / `pitchers_matched.json` schema with two
+enrichments:
+
+- **`stats.savant.*` percentile ranks**: every numeric Savant field
+  picks up a `<field>_pct_rnk` against the **current**-source settled
+  rostered + replacement-level universe. Direction-aware — `K_pct`,
+  `swing_miss_pct`, ERA, WHIP, xwOBA-against, etc. are inverted so
+  `pct_rnk` always means *good performance for the role* regardless of
+  stat polarity.
+
+- **`valuations` nested by source label**: `{preseason, updated, ros,
+  synthetic, current}`. Each source-block carries:
+
+```
+{
+  primary_position: string            // "SS" | "1B" | ... | "UTIL" | "SP" | "RP"
+  tier: string                        // "ROSTERED" | "REPLACEMENT" | "BELOW_REPLACEMENT"
+  total_z: float                      // sum of settled per-cat z-scores
+  total_dollars: float                // sum of per-cat dollar values
+  z_scores: { <cat>: float, ... }     // settled z per category (>= 0 after baseline shift)
+  dollar_values: { <cat>: float, ... }
+}
+```
+
+The top-level fields are the player's *primary-pool* valuation; multi-pool
+players (e.g. a 1B also rostered in UTIL) have their full per-pool history
+in `valuations_by_position` during pipeline execution, but only the
+primary pool surfaces into the merged JSON to avoid ambiguity for
+downstream consumers.
+
+**2. Position Summary CSV** (`<source>/position_summary.csv`)
+
+The only per-source artifact. Pool-level aggregates that aren't in the
+merged JSON — useful for inspecting *how* the engine priced a pool.
+
+```
+position: string                          // "C" | "1B" | ... | "UTIL" | "SP" | "RP"
+role: string                              // "HITTER" | "SP" | "RP"
 rostered_count: integer
 replacement_tier_count: integer
 total_budget: float
-budget_<category>: float           // Budget allocated per category (e.g., budget_R, budget_HR)
-pool_total_z_<category>: float     // Sum of positive rostered Z-scores per category
-dollars_per_z_<category>: float    // Conversion rate (e.g., dollars_per_z_R, dollars_per_z_HR)
-replacement_baseline_<category>: float  // RLP archetype stats (e.g., replacement_baseline_R)
+budget_<category>: float                  // category dollar pot (budget_R, budget_HR, ...)
+pool_total_z_<category>: float            // sum of settled z's across rostered tier
+dollars_per_z_<category>: float           // $/z conversion the engine settled on
+replacement_baseline_<category>: float    // RLP archetype's raw value
 ```
 
-**3. Hitters JSON** (`hitters.json`)
-This should match the upstream batters schema and append a new stats.valuations object that captures all the z-scores and shekels that are league specific.  This JSON will feed the loader pipe with easy translation to postgres db.
-
-**4. Pitchers JSON** (`pitchers.json`)
-This should match the upstream pitchers schema and append a new stats.valuations object that captures all the z-scores and shekels that are league specific.  This JSON will feed the loader pipe with easy translation to postgres db.
-
-**5. Detailed Position CSVs** (e.g., `C.csv`, `SS.csv`, `UTIL.csv`)
-
-Per-position exports showing all rostered and replacement players for that position. These exports use the `GET_POSITION_VALUATION` helper to ensure data consistency:
-
-- **Multi-position players:** Show position-specific tier, Z-scores, and dollar values from `valuations_by_position[position]`
-- **Single-position players:** Fall back to top-level valuation
-
-This ensures exports are accurate. For example, Trevor Story might appear as:
-- `SS.csv`: tier=REPLACEMENT, total_z=-0.5, total_dollars=-$0.10
-- `UTIL.csv`: tier=ROSTERED, total_z=2.1, total_dollars=$17.00
-
-Both exports reflect his actual valuation at that specific position.
+Use this to answer "why did SS get 12% of the hitter budget?" or
+"what's the $/z for OBP after the swap-pass?".
 
 ---
 
@@ -960,7 +970,12 @@ RETURN SQRT(variance)
 
 **GET_POSITION_VALUATION(player, position)**
 
-Helper function for exports. Returns position-specific valuation data if available, otherwise falls back to top-level valuation. This ensures position-specific CSVs show accurate tier/Z/dollar data for multi-position players.
+Helper function for any caller that needs a multi-pool player's
+valuation *as seen by a specific pool*. Reads from
+`valuations_by_position[position]` when present, falls back to
+top-level. Still used internally by Phase 5's swap-pass and by the
+budget validators; the per-position detailed CSVs that used to call
+this have been removed (their data was already in the merged JSON).
 
 ```
 GET_POSITION_VALUATION(player, position):
@@ -1209,14 +1224,34 @@ MAIN():
     // ========================================================================
     // Phase 10: Output
     // ========================================================================
+    // Per-source pipeline only writes pool-level aggregates here. The
+    // merged per-player JSON is written once across all sources by the
+    // outer ``run_all_valuations`` driver — see below.
 
-    WRITE_VALUATIONS_CSV(output_dir / "valuations.csv", all_pools)
     WRITE_POSITION_SUMMARY_CSV(output_dir / "position_summary.csv", all_pools)
-    WRITE_PLAYER_JSON(output_dir / "hitters.json", batters_data, hitter_pools)
-    WRITE_PLAYER_JSON(output_dir / "pitchers.json", pitchers_data, sp_pool + rp_pool)
 
-    // Export detailed position CSVs using GET_POSITION_VALUATION helper
-    EXPORT_DETAILED_POSITION_CSVS(hitter_pools, sp_pool, rp_pool, output_dir)
+    // Per-player valuations returned in-memory so the multi-source driver
+    // can merge them by source label.
+    hitter_valuations  = BUILD_PLAYER_VALUATIONS(hitter_pools)
+    pitcher_valuations = BUILD_PLAYER_VALUATIONS(sp_pool + rp_pool)
+    return (hitter_valuations, pitcher_valuations, hitter_rostered_rlp_ids, pitcher_rostered_rlp_ids)
+
+
+// Outer driver (run_all_valuations) — once across all 5 sources
+FOR source IN ("projections", "projs_updated", "ros", "synthetic", "current"):
+    (h_vals, p_vals, h_ids, p_ids) = RUN_TRP_VALUATION(source, output_dir/source_label)
+    hitter_vals_by_source[source_label]  = h_vals
+    pitcher_vals_by_source[source_label] = p_vals
+    IF source == "current":
+        current_hitter_ids  = h_ids
+        current_pitcher_ids = p_ids
+
+// Inject savant pct_rnks using the current-source rostered+RLP universe
+INJECT_SAVANT_PCT_RNKS(batters_data, pitchers_data, current_hitter_ids, current_pitcher_ids)
+
+// Write the canonical merged JSONs (only) at the output root
+WRITE_MERGED_PLAYER_JSON(output_dir / "hitters.json",  batters_data,  hitter_vals_by_source)
+WRITE_MERGED_PLAYER_JSON(output_dir / "pitchers.json", pitchers_data, pitcher_vals_by_source)
 ```
 
 ---
@@ -1276,11 +1311,15 @@ Dedupe assigns him to UTIL, but preserves his SS valuation for exports.
 - Stores dollars back into `valuations_by_position[position]`
 
 *Benefits:*
-- Multi-position players show accurate dollar values per position
-- Exports are consistent: tier, Z-scores, and dollars all align per position
+- Multi-position players carry accurate dollar values per pool internally
+- Phase 5's swap-pass + budget validators read the per-pool view to keep
+  cross-pool $/z math consistent
 - Example: Trevor Story = $17 at UTIL (rostered), -$0.10 at SS (replacement)
 
-*Export logic:* `GET_POSITION_VALUATION(player, position)` reads from position-specific valuation if available, otherwise falls back to top-level.
+*Consumer view:* the merged `hitters.json` / `pitchers.json` surfaces
+each player's *primary-pool* valuation under `valuations[source]` (one
+canonical position per source). The per-pool history stays internal to
+the pipeline.
 
 ---
 
