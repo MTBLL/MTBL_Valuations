@@ -11,64 +11,6 @@ import pandas as pd
 from ..domain.models import PositionPool
 
 
-def write_valuations_csv(
-    output_path: Path,
-    all_pools: dict[str, PositionPool],
-    categories: dict[str, list[str]],
-) -> None:
-    """Write player valuations to CSV.
-
-    Each player appears once per role, using their primary_position.
-    Deduplicates players who appear in multiple pools (e.g., UTIL players).
-    Two-way players (e.g., Ohtani) appear twice - once as hitter, once as pitcher.
-    """
-    rows = []
-    seen_players = set()  # Track (player_id, role) we've already added
-
-    for pos, pool in all_pools.items():
-        all_players = (
-            pool.rostered_players + pool.replacement_players + pool.below_replacement
-        )
-
-        for player in all_players:
-            # Use (player_id, role) as key to allow two-way players
-            player_key = (player.id, pool.role)
-
-            # Skip if we've already added this player-role (e.g., UTIL player in original pool)
-            if player_key in seen_players:
-                continue
-
-            seen_players.add(player_key)
-
-            row = {
-                "player_id": player.id,
-                "name": player.name,
-                "position": player.valuation.primary_position,  # Use primary_position
-                "role": pool.role,
-                "total_z": round(player.valuation.total_z, 3),
-                "dollar_value": round(player.valuation.total_dollars, 2),
-                "tier": player.valuation.tier,
-            }
-
-            # Add Z-scores per category
-            for cat in player.valuation.normalized_z.keys():
-                row[f"z_{cat}"] = round(player.valuation.normalized_z[cat], 3)
-
-            # Add dollar values per category
-            for cat in player.valuation.dollar_values.keys():
-                row[f"dollar_{cat}"] = round(player.valuation.dollar_values[cat], 2)
-
-            rows.append(row)
-
-    # Sort by dollar value descending
-    rows = sorted(rows, key=lambda r: float(r["dollar_value"]), reverse=True)  # type: ignore[arg-type]
-
-    # Write to CSV
-    if rows:
-        df = pd.DataFrame(rows)
-        df.to_csv(output_path, index=False)
-
-
 def write_position_summary_csv(
     output_path: Path, all_pools: dict[str, PositionPool]
 ) -> None:
@@ -151,30 +93,6 @@ def build_player_valuations(
             }
 
     return player_valuations
-
-
-def write_player_json(
-    output_path: Path,
-    input_data: list[dict[str, Any]],
-    all_pools: dict[str, PositionPool],
-) -> None:
-    """
-    Write enriched player JSON with single-source valuation data.
-    Matches input schema and appends a flat ``valuations`` object per player.
-    """
-    player_valuations = build_player_valuations(all_pools)
-
-    # Enrich input data with valuations
-    enriched = []
-    for record in input_data:
-        player_id = str(record["id_espn"])
-        if player_id in player_valuations:
-            record["valuations"] = player_valuations[player_id]
-        enriched.append(record)
-
-    # Write to JSON
-    with open(output_path, "w") as f:
-        json.dump(enriched, f, indent=2)
 
 
 def write_merged_player_json(

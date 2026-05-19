@@ -42,7 +42,6 @@ from mtbl_valuations.engine.valuation import (
     get_categories,
     get_player_stat,
 )
-from mtbl_valuations.io.exports import export_detailed_position_csvs
 from mtbl_valuations.io.current import (
     load_batters_current,
     load_pitchers_current,
@@ -63,9 +62,7 @@ from mtbl_valuations.io.synthetic import (
 from mtbl_valuations.io.writers import (
     build_player_valuations,
     write_merged_player_json,
-    write_player_json,
     write_position_summary_csv,
-    write_valuations_csv,
 )
 
 # Valuation sources mapped to the output-subdir / JSON-key label used in the
@@ -487,46 +484,20 @@ def _run_trp_valuation_inner(
     # ========================================================================
     # Phase 10: Output
     # ========================================================================
+    # Per-source pipeline only writes ``position_summary.csv`` — the
+    # pool-level aggregates (budget_*, dollars_per_z_*, replacement_baseline_*)
+    # aren't carried in the merged player JSON. Everything else
+    # (per-player valuations, z-scores, dollars, raw projection / savant
+    # diagnostics) lands in the top-level merged ``hitters.json`` /
+    # ``pitchers.json`` via ``run_all_valuations``, so per-source
+    # valuations.csv / *_detailed.csv / hitters.json / pitchers.json are
+    # not written.
     print("\nPhase 10: Writing output files...")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write CSV outputs
-    write_valuations_csv(
-        output_dir / "valuations.csv",
-        all_pools,
-        {
-            "hitter": league_settings["batting_categories"],
-            "pitcher": league_settings["pitching_categories"],
-        },
-    )
-    print(f"  ✓ Wrote {output_dir / 'valuations.csv'}")
-
     write_position_summary_csv(output_dir / "position_summary.csv", all_pools)
     print(f"  ✓ Wrote {output_dir / 'position_summary.csv'}")
-
-    # Write enriched JSON outputs
-    with open(batters_file) as f:
-        batters_data = json.load(f)
-
-    with open(pitchers_file) as f:
-        pitchers_data = json.load(f)
-
-    write_player_json(output_dir / "hitters.json", batters_data, hitter_pools)
-    print(f"  ✓ Wrote {output_dir / 'hitters.json'}")
-
-    write_player_json(output_dir / "pitchers.json", pitchers_data, sp_pool | rp_pool)
-    print(f"  ✓ Wrote {output_dir / 'pitchers.json'}")
-
-    # Export detailed position-specific CSVs
-    export_detailed_position_csvs(
-        hitter_pools,
-        sp_pool["SP"],
-        rp_pool["RP"],
-        output_dir,
-        league_settings["batting_categories"],
-        league_settings["pitching_categories"],
-    )
 
     print("\n=== TRP Valuation Complete ===")
 

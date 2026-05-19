@@ -97,12 +97,13 @@ class TestPipeline:
             batters_file, pitchers_file, league_file, budget_config_file, tmp_path
         )
 
-        # Each source gets its own subdirectory of CSV outputs — the three
-        # Fangraphs projection sets, the Statcast-derived synthetic source,
-        # and the current-season-actuals source.
+        # Each source gets its own subdirectory containing position_summary.csv
+        # (pool-level aggregates not carried in the merged JSON). Per-source
+        # valuations.csv / *_detailed.csv / hitters.json / pitchers.json were
+        # dropped — that data lives in the top-level merged JSON's
+        # ``valuations[source]`` blocks.
         sources = ("preseason", "updated", "ros", "synthetic", "current")
         for label in sources:
-            assert (tmp_path / label / "valuations.csv").exists()
             assert (tmp_path / label / "position_summary.csv").exists()
 
         # A single merged JSON sits at the top level, with each player's

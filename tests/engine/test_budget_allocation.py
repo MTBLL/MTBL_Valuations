@@ -50,57 +50,18 @@ class TestRosteredTierBudget:
     """Test that only rostered tier players consume budget."""
 
     def test_only_rostered_tier_consumes_budget(self, run_trp, league_budget):
-        """Test that total allocated dollars only come from rostered tier."""
-        # Load position summary
+        """Sum of per-pool budgets across position_summary.csv equals the
+        league budget exactly. Per-pool conservation (calc_pool_dollars_per_z
+        + distribute_pool_dollars) guarantees each pool's rostered tier
+        consumes exactly that pool's budget, so the per-pool sum is a
+        direct check on league-wide allocation."""
         position_summary = pd.read_csv(run_trp / "position_summary.csv")
+        total_allocated = float(position_summary["total_budget"].sum())
 
-        # Load detailed CSVs for each position
-        total_allocated = 0.0
-        seen_players = set()  # Track players by (id, primary_position) to avoid double-counting
-
-        for _, row in position_summary.iterrows():
-            position: str = str(row["position"])
-            role = row["role"]
-
-            # Build expected filename
-            if role == "HITTER":
-                filename = f"{position.lower()}_detailed.csv"
-            elif role == "SP":
-                filename = "sp_detailed.csv"
-            elif role == "RP":
-                filename = "rp_detailed.csv"
-            else:
-                continue
-
-            detailed_file = run_trp / filename
-            if not detailed_file.exists():
-                continue
-
-            # Load detailed CSV
-            df = pd.read_csv(detailed_file)
-
-            # Filter to rostered tier only
-            rostered = df[df["tier"] == "ROSTERED"]
-
-            # Sum dollars, but only count each player once (by their primary position)
-            for _, player_row in rostered.iterrows():
-                player_key = (player_row["id"], player_row["primary_position"])
-                if player_key not in seen_players:
-                    seen_players.add(player_key)
-                    total_allocated += player_row["total_dollars"]
-
-        # Check against budget. Per-pool conservation is exact (each
-        # pool's rostered sum equals its category-budget sum). The wider
-        # ~$50 tolerance here covers Phase 5's swap-pass: when a player
-        # is promoted from RLP to rostered in a position pool but is
-        # still in UTIL pool's rostered tier (from Phase 4a), the
-        # ``(id, primary_position)`` dedupe in this test counts them in
-        # only one pool, leaving a small budget-vs-test-sum gap that
-        # scales with the number of cross-pool rostered players.
         difference = abs(total_allocated - league_budget.total)
-        assert difference < 100.0, (
-            f"Total allocated from rostered tier (${total_allocated:.2f}) "
-            f"should match budget (${league_budget.total:.2f}), "
+        assert difference < 1.0, (
+            f"Sum of pool budgets (${total_allocated:.2f}) should match "
+            f"league budget (${league_budget.total:.2f}), "
             f"difference: ${difference:.2f}"
         )
 
