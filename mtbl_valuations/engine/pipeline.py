@@ -37,7 +37,11 @@ from mtbl_valuations.engine.pools import (
     build_util_pool,
     dedupe_multi_position_players,
 )
-from mtbl_valuations.engine.valuation import distribute_pool_dollars, get_player_stat
+from mtbl_valuations.engine.valuation import (
+    distribute_pool_dollars,
+    get_categories,
+    get_player_stat,
+)
 from mtbl_valuations.io.exports import export_detailed_position_csvs
 from mtbl_valuations.io.current import (
     load_batters_current,
@@ -366,7 +370,13 @@ def _run_trp_valuation_inner(
     }
     # Phase 6b
     print("  Iterating SP pool to convergence...")
-    sp_pool = iterate_to_convergence_global(sp_pool, budget_config, league_settings)
+    phase_token = push_phase("phase6b-iter")
+    try:
+        sp_pool = iterate_to_convergence_global(
+            sp_pool, budget_config, league_settings
+        )
+    finally:
+        pop_phase(phase_token)
 
     # Phase 6c
     rp_pool: dict[str, PositionPool] = {
@@ -381,7 +391,13 @@ def _run_trp_valuation_inner(
     }
     # Phase 6d
     print("  Iterating RP pool to convergence...")
-    rp_pool = iterate_to_convergence_global(rp_pool, budget_config, league_settings)
+    phase_token = push_phase("phase6d-iter")
+    try:
+        rp_pool = iterate_to_convergence_global(
+            rp_pool, budget_config, league_settings
+        )
+    finally:
+        pop_phase(phase_token)
 
     # ========================================================================
     # Phase 7: Allocate pitcher budgets
@@ -420,6 +436,19 @@ def _run_trp_valuation_inner(
 
     # Distribute dollars to all pitcher players
     distribute_pool_dollars(pitchers, store_per_position=False)
+
+    # Phase 8 budget snapshot — per-pool log for SP and RP. Pitchers don't
+    # share budget across pools (allocate_pool_budget runs independently
+    # per pool), so league_raw / league_budget are omitted; the per-pool
+    # totals already tell the whole story.
+    if iter_logger is not None:
+        for pos, pool in pitchers.items():
+            iter_logger.log_budget(
+                pool,
+                "phase8-budget",
+                per_position=False,
+                categories=get_categories(pool.role, league_settings),
+            )
 
     # ========================================================================
     # Phase 9: Validate

@@ -40,11 +40,16 @@ _LEVEL_NAMES = {"INSIGHTS": INSIGHTS, "DEBUG": logging.DEBUG}
 # clear z > 4 against the rough early-iter baselines).
 _BASELINE_SHIFT_LIMIT = 1.0
 
-# Phases that get per-iteration log files written. Anything else (pitcher
-# phases, or contexts where no phase was pushed) is a no-op. Phase 5 budget
+# Phases that get per-iteration log files written. Phase 5 / 8 budget
 # logging is driven by an explicit pipeline call (not via this list).
 _LOGGED_ITER_PHASES = frozenset(
-    {"phase3b-iter", "phase3d-reiter", "phase4b-util"}
+    {
+        "phase3b-iter",
+        "phase3d-reiter",
+        "phase4b-util",
+        "phase6b-iter",
+        "phase6d-iter",
+    }
 )
 
 
@@ -338,35 +343,38 @@ class IterationLogger:
             f.write(self._banner(phase, pos, self.source, None))
             f.write(f"ts: {datetime.now().isoformat(timespec='seconds')}\n\n")
 
-            cat_table: dict[str, list[Any]] = {
-                "cat": categories,
-                "league_raw": [
-                    (league_raw or {}).get(c, 0.0) for c in categories
-                ],
-                "pos_raw": [
-                    sum(get_player_stat(p, c) for p in rostered)
-                    for c in categories
-                ],
-                "league_budget": [
-                    (league_budget or {}).get(c, 0.0) for c in categories
-                ],
-                "pos_budget": [
-                    pool.category_budgets.get(c, 0.0) for c in categories
-                ],
-                "stdev": [
-                    pool.rostered_tier_stdevs.get(c, 0.0) for c in categories
-                ],
-                "$/Z": [pool.dollars_per_z.get(c, 0.0) for c in categories],
-                "total_pool_z": [
-                    pool.total_pool_z.get(c, 0.0) for c in categories
-                ],
-                "production_share": [
-                    pool.production_share.get(c, 0.0) for c in categories
-                ],
-                "z_baseline_shift": [
-                    pool.z_baseline_shift.get(c, 0.0) for c in categories
-                ],
-            }
+            cat_table: dict[str, list[Any]] = {"cat": categories}
+            # league_raw / league_budget are optional: hitter Phase 5 has
+            # cross-pool universes that anchor the per-pool values; pitcher
+            # pools (SP/RP) don't share budget, so the cols are skipped to
+            # keep the table tight.
+            if league_raw is not None:
+                cat_table["league_raw"] = [
+                    league_raw.get(c, 0.0) for c in categories
+                ]
+            cat_table["pos_raw"] = [
+                sum(get_player_stat(p, c) for p in rostered) for c in categories
+            ]
+            if league_budget is not None:
+                cat_table["league_budget"] = [
+                    league_budget.get(c, 0.0) for c in categories
+                ]
+            cat_table["pos_budget"] = [
+                pool.category_budgets.get(c, 0.0) for c in categories
+            ]
+            cat_table["stdev"] = [
+                pool.rostered_tier_stdevs.get(c, 0.0) for c in categories
+            ]
+            cat_table["$/Z"] = [pool.dollars_per_z.get(c, 0.0) for c in categories]
+            cat_table["total_pool_z"] = [
+                pool.total_pool_z.get(c, 0.0) for c in categories
+            ]
+            cat_table["production_share"] = [
+                pool.production_share.get(c, 0.0) for c in categories
+            ]
+            cat_table["z_baseline_shift"] = [
+                pool.z_baseline_shift.get(c, 0.0) for c in categories
+            ]
             cat_df = pd.DataFrame(cat_table)
             f.write("category budgets (raw values are SUMS over rostered tiers):\n")
             f.write(cat_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
