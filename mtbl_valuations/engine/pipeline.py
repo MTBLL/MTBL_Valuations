@@ -7,6 +7,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+
 from mtbl_valuations.domain.models import PositionPool
 from mtbl_valuations.engine.iteration_logger import (
     IterationLogger,
@@ -662,34 +671,53 @@ def run_all_valuations(
     current_hitter_ids: set[str] = set()
     current_pitcher_ids: set[str] = set()
 
-    for source, label in SOURCE_LABELS.items():
-        print(f"\n{'#' * 70}")
-        print(f"# Projection source: {label}  ({source})")
-        print(f"{'#' * 70}\n")
-        iter_logger: IterationLogger | None = None
-        if iter_run_dir is not None and log_level_num is not None:
-            iter_logger = IterationLogger(iter_run_dir, label, log_level_num)
-        (
-            hitter_valuations,
-            pitcher_valuations,
-            hitter_ids,
-            pitcher_ids,
-        ) = run_trp_valuation(
-            batters_file,
-            pitchers_file,
-            league_file,
-            budget_config_file,
-            output_dir / label,
-            source,
-            iter_logger=iter_logger,
+    # Top-level progress: one tick per valuation source. Rich's Progress
+    # uses a Live block that scrolls the per-source phase prints above
+    # the bar — gives "where are we in the 5-source run" awareness
+    # without rewriting the per-phase output.
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+    )
+    with progress:
+        sources_task = progress.add_task(
+            "Valuation sources", total=len(SOURCE_LABELS)
         )
-        hitter_vals_by_source[label] = hitter_valuations
-        pitcher_vals_by_source[label] = pitcher_valuations
-        if source == "current":
-            current_hitter_ids = hitter_ids
-            current_pitcher_ids = pitcher_ids
-        if iter_logger is not None:
-            iter_logger.finalize_summary()
+        for source, label in SOURCE_LABELS.items():
+            progress.update(sources_task, description=f"Source: {label}")
+            print(f"\n{'#' * 70}")
+            print(f"# Projection source: {label}  ({source})")
+            print(f"{'#' * 70}\n")
+            iter_logger: IterationLogger | None = None
+            if iter_run_dir is not None and log_level_num is not None:
+                iter_logger = IterationLogger(iter_run_dir, label, log_level_num)
+            (
+                hitter_valuations,
+                pitcher_valuations,
+                hitter_ids,
+                pitcher_ids,
+            ) = run_trp_valuation(
+                batters_file,
+                pitchers_file,
+                league_file,
+                budget_config_file,
+                output_dir / label,
+                source,
+                iter_logger=iter_logger,
+            )
+            hitter_vals_by_source[label] = hitter_valuations
+            pitcher_vals_by_source[label] = pitcher_valuations
+            if source == "current":
+                current_hitter_ids = hitter_ids
+                current_pitcher_ids = pitcher_ids
+            if iter_logger is not None:
+                iter_logger.finalize_summary()
+            progress.advance(sources_task)
+        progress.update(sources_task, description="Sources complete")
 
     # Merged enriched JSON across all sources
     print("\nWriting merged multi-source player JSON...")
