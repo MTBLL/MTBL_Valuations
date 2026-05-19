@@ -568,7 +568,11 @@ def _run_trp_valuation_inner(
 # loop converging cleanly. Empirically: zero ``rlp_outprices`` warnings
 # across all 5 valuation sources. Add a swap-pass only if a future
 # source surfaces SP/RP mis-allocations.
-_SWAP_PASS_POSITIONS = frozenset({"C", "1B", "2B", "3B", "SS", "OF", "UTIL"})
+# Tuple (not frozenset) for deterministic iteration order — the swap loop
+# re-runs Phase 5's dollar math after each pool's pair-swap, so iteration
+# order influences which pool's averages get refreshed first and therefore
+# which subsequent swaps trigger. Deterministic order keeps runs reproducible.
+_SWAP_PASS_POSITIONS: tuple[str, ...] = ("C", "1B", "2B", "3B", "SS", "OF", "UTIL")
 
 
 def _resolve_hitter_dollar_misallocations(

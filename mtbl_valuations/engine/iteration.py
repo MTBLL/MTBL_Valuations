@@ -879,11 +879,19 @@ def recompute_pool_z_in_place(
             _ensure_position_valuation(p, pos)
             pv = p.valuation.valuations_by_position[pos]
             pv.normalized_z = settled
-        # Always also mirror to top-level: ``calc_pool_dollars_per_z``
-        # reads ``player.valuation.normalized_z`` regardless of per_position
-        # mode, so per_position swap-pass refreshes must keep top-level in
-        # sync to preserve budget conservation across pools.
-        p.valuation.normalized_z = settled
+            # Multi-pool players (e.g. UTIL candidates also in a base pool)
+            # must NOT have their top-level normalized_z stomped by a
+            # non-primary pool's recompute — exported total_z / z_scores
+            # would otherwise reflect whichever pool ran last. Only mirror
+            # when this is the player's primary pool. ``calc_pool_dollars_per_z``
+            # already prefers ``valuations_by_position[pos]`` for the
+            # current pool, so budget conservation doesn't need the mirror.
+            if p.valuation.primary_position in ("", pos):
+                p.valuation.normalized_z = settled
+        else:
+            # Single-pool mode (pitcher pools, pre-dedupe global): no
+            # primary-position ambiguity, mirror unconditionally.
+            p.valuation.normalized_z = settled
 
     if per_position:
         pool.total_pool_z = {
@@ -908,21 +916,29 @@ def recompute_pool_z_in_place(
         if per_position:
             pv = p.valuation.valuations_by_position[pos]
             pv.total_z = sum(pv.normalized_z.values())
-        # Mirror to top-level so downstream consumers (writers,
-        # build_player_valuations, validators) see consistent values.
-        p.valuation.total_z = sum(p.valuation.normalized_z.values())
+            # Mirror to top-level only for this pool's primary-position
+            # players (same reasoning as the normalized_z gate above).
+            if p.valuation.primary_position in ("", pos):
+                p.valuation.total_z = sum(pv.normalized_z.values())
+        else:
+            p.valuation.total_z = sum(p.valuation.normalized_z.values())
 
     if per_position:
         assign_player_tiers_per_position(pool)
-        # Mirror tier flag to top-level too (writers / downstream read
-        # player.valuation.tier; without this mirror after a swap the
-        # top-level tier stays stale at Phase 3d's value).
+        # Mirror tier flag to top-level too, but only for players whose
+        # primary position is THIS pool. Multi-pool players (e.g. a 1B
+        # also in UTIL) keep the tier from their primary pool's swap pass.
+        # Without this gate the exported tier would reflect whichever
+        # pool ran last in the (previously frozenset-ordered) swap loop.
         for p in pool.rostered_players:
-            p.valuation.tier = "ROSTERED"
+            if p.valuation.primary_position in ("", pos):
+                p.valuation.tier = "ROSTERED"
         for p in pool.replacement_players:
-            p.valuation.tier = "REPLACEMENT"
+            if p.valuation.primary_position in ("", pos):
+                p.valuation.tier = "REPLACEMENT"
         for p in pool.below_replacement:
-            p.valuation.tier = "BELOW_REPLACEMENT"
+            if p.valuation.primary_position in ("", pos):
+                p.valuation.tier = "BELOW_REPLACEMENT"
     else:
         assign_player_tiers_global(pool)
 
