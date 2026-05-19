@@ -62,3 +62,26 @@ def validate_rlp_z_scores(all_pools: dict[str, PositionPool]) -> None:
 
     if all_valid:
         print("✓ All RLP Z-scores are near 0")
+
+
+def validate_position_valuation_hydration(pools: dict[str, PositionPool]) -> None:
+    """Validate that rostered/replacement players have position-specific dollar values."""
+    warnings = []
+
+    for pos, pool in pools.items():
+        for player in pool.rostered_players + pool.replacement_players:
+            if pos not in player.valuation.valuations_by_position:
+                warnings.append(
+                    f"{player.name} in {pos} pool missing PositionValuation"
+                )
+            else:
+                pos_val = player.valuation.valuations_by_position[pos]
+                if not pos_val.dollar_values:
+                    warnings.append(f"{player.name} at {pos} has empty dollar_values")
+
+    if warnings:
+        print("\n⚠️  PositionValuation Hydration Warnings:")
+        for warning in warnings[:10]:  # Limit to first 10
+            print(f"  - {warning}")
+        if len(warnings) > 10:
+            print(f"  ... and {len(warnings) - 10} more")

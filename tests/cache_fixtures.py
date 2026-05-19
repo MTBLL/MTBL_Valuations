@@ -14,7 +14,10 @@ from mtbl_valuations.engine.budget import (
     allocate_position_budgets,
     calc_pool_dollars_per_z,
 )
-from mtbl_valuations.engine.iteration import iterate_to_convergence
+from mtbl_valuations.engine.iteration import (
+    iterate_to_convergence_global,
+    iterate_to_convergence_per_position,
+)
 from mtbl_valuations.engine.pools import (
     build_pitcher_pool,
     build_util_pool,
@@ -100,11 +103,10 @@ def converged_hitter_pools(
         # Create deep copy to avoid mutating the session-scoped regular_hitter_pools fixture
         import copy
         pools_copy = copy.deepcopy(regular_hitter_pools)
-        return iterate_to_convergence(
+        return iterate_to_convergence_per_position(
             pools_copy,
             budget_config,
             league_settings,
-            track_z_per_pool=True,
         )
 
     # Generate cache key from input files
@@ -130,11 +132,10 @@ def converged_hitter_pools(
     # Create deep copy to avoid mutating the session-scoped regular_hitter_pools fixture
     import copy
     pools_copy = copy.deepcopy(regular_hitter_pools)
-    result = iterate_to_convergence(
+    result = iterate_to_convergence_per_position(
         pools_copy,
         budget_config,
         league_settings,
-        track_z_per_pool=True,
     )
 
     # Save to cache
@@ -234,7 +235,7 @@ def hitter_pools_deduped_converged(
         # Create deep copy to avoid mutating the deduped pools from parent fixture
         import copy
         pools_copy = copy.deepcopy(deduped)
-        return iterate_to_convergence(pools_copy, budget_config, league_settings)
+        return iterate_to_convergence_global(pools_copy, budget_config, league_settings)
 
     # Generate cache key from input files
     key = _cache_key(
@@ -259,7 +260,7 @@ def hitter_pools_deduped_converged(
     # Create deep copy to avoid mutating the deduped pools from parent fixture
     import copy
     pools_copy = copy.deepcopy(deduped)
-    result = iterate_to_convergence(pools_copy, budget_config, league_settings)
+    result = iterate_to_convergence_global(pools_copy, budget_config, league_settings)
 
     # Save to cache
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -388,11 +389,15 @@ def hitter_pools_with_util_pool_converged_phase4b(
     # Create a copy to avoid mutating the session-scoped fixture
     hitter_pools = dict(hitter_pools_deduped_converged)
     if not use_test_cache:
-        results = iterate_to_convergence(
+        from mtbl_valuations.engine.iteration import finalize_pool_player_valuations
+
+        results = iterate_to_convergence_per_position(
             {"UTIL": util_pool_phase4a},
             budget_config,
             league_settings,
         )["UTIL"]
+        # Phase 4c: Finalize UTIL pool player valuations
+        finalize_pool_player_valuations(results)
         hitter_pools["UTIL"] = results
         return hitter_pools
 
@@ -416,11 +421,15 @@ def hitter_pools_with_util_pool_converged_phase4b(
             pass
 
     # Not cached or corrupted - run expensive operation
-    results = iterate_to_convergence(
+    from mtbl_valuations.engine.iteration import finalize_pool_player_valuations
+
+    results = iterate_to_convergence_per_position(
         {"UTIL": util_pool_phase4a},
         budget_config,
         league_settings,
     )["UTIL"]
+    # Phase 4c: Finalize UTIL pool player valuations
+    finalize_pool_player_valuations(results)
     hitter_pools["UTIL"] = results
 
     # Save to cache
@@ -617,7 +626,7 @@ def converged_sp_pool(
     use_test_cache: bool,
 ) -> dict[str, PositionPool]:
     if not use_test_cache:
-        return iterate_to_convergence(sp_pool_phase6a, budget_config, league_settings)
+        return iterate_to_convergence_global(sp_pool_phase6a, budget_config, league_settings)
     # Generate cache key from input files
     key = _cache_key(
         pitchers_file.read_text(),
@@ -638,7 +647,7 @@ def converged_sp_pool(
             pass
 
     # Not cached or corrupted - run expensive operation
-    result = iterate_to_convergence(sp_pool_phase6a, budget_config, league_settings)
+    result = iterate_to_convergence_global(sp_pool_phase6a, budget_config, league_settings)
 
     # Save to cache
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -741,7 +750,7 @@ def converged_rp_pool(
     use_test_cache: bool,
 ) -> dict[str, PositionPool]:
     if not use_test_cache:
-        return iterate_to_convergence(rp_pool_phase6c, budget_config, league_settings)
+        return iterate_to_convergence_global(rp_pool_phase6c, budget_config, league_settings)
 
     # Generate cache key from input files
     key = _cache_key(
@@ -763,7 +772,7 @@ def converged_rp_pool(
             pass
 
     # Not cached or corrupted - run expensive operation
-    result = iterate_to_convergence(rp_pool_phase6c, budget_config, league_settings)
+    result = iterate_to_convergence_global(rp_pool_phase6c, budget_config, league_settings)
 
     # Save to cache
     CACHE_DIR.mkdir(parents=True, exist_ok=True)

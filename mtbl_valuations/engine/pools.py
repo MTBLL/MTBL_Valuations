@@ -425,10 +425,10 @@ def dedupe_multi_position_players(
 
     # Update tier attributes to match the tier lists after refill
     # Import here to avoid circular dependency (iteration.py imports from pools.py)
-    from mtbl_valuations.engine.iteration import assign_player_tiers
+    from mtbl_valuations.engine.iteration import assign_player_tiers_per_position
 
     for pool in pools.values():
-        assign_player_tiers(pool, track_z_per_pool=True)
+        assign_player_tiers_per_position(pool)
 
     if _debug_enabled():
         for pos, pool in pools.items():

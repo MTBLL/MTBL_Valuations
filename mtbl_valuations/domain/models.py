@@ -30,6 +30,17 @@ class HitterStats(MTBLBaseModel):
     obp: float
     slg: float
     wrc_plus: float = 0.0  # Optional: used for sorting/diagnostics
+    # Sabermetric / Statcast diagnostics — NOT valuation category inputs.
+    # woba/wraa come from the Fangraphs projection source. The x* metrics and
+    # sprint_speed are observed Savant data and are None when a player has no
+    # Savant record (~70% of players). Reserved for the Phase B savant blend.
+    woba: float = 0.0
+    wraa: float = 0.0
+    xwoba: float | None = None
+    xobp: float | None = None
+    xslg: float | None = None
+    xhr: float | None = None
+    sprint_speed: float | None = None
 
 
 class PitcherStats(MTBLBaseModel):
@@ -42,6 +53,10 @@ class PitcherStats(MTBLBaseModel):
     qs: float = 0.0  # SP only
     svhd: float = 0.0  # RP only
     fip: float = 0.0  # Optional: used for sorting/diagnostics
+    # Statcast diagnostics — NOT valuation category inputs. Observed Savant
+    # data; None when a player has no Savant record. Reserved for Phase B.
+    xera: float | None = None
+    xwoba: float | None = None
 
 
 class PositionValuation(MTBLBaseModel):
@@ -53,6 +68,8 @@ class PositionValuation(MTBLBaseModel):
     position: str
     normalized_z: dict[str, float]
     total_z: float
+    dollar_values: dict[str, float] = Field(default_factory=dict)
+    total_dollars: float = 0.0
     tier: Tier
     position_rank: int
 

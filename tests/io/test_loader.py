@@ -27,7 +27,7 @@ def test_load_batters_maps_projection_fields(batters_file):
         records = json.load(f)
 
     record: dict[str, object] = _get_record_by_id(records, "32801")
-    projections = record.get("stats").get("projections")  # type: ignore
+    projections = record["stats"]["fangraphs"]["projections"]  # type: ignore
 
     hitters = load_batters(batters_file)
     hitter = next(hp for hp in hitters if hp.player.id == str(record["id_espn"]))
@@ -58,10 +58,10 @@ def test_load_pitchers_assigns_roles_and_stats(pitchers_file):
         records = json.load(f)
 
     swingman_record = _get_record_by_id(records, "42584")
-    swingman_proj = swingman_record.get("stats").get("projections")  # type: ignore
+    swingman_proj = swingman_record["stats"]["fangraphs"]["projections"]  # type: ignore
 
     rp_record = _get_record_by_id(records, "4734325")
-    rp_proj = rp_record.get("stats")["projections"]  # type: ignore[reportIndexIssue]
+    rp_proj = rp_record["stats"]["fangraphs"]["projections"]  # type: ignore[reportIndexIssue]
 
     pitchers = load_pitchers(pitchers_file)
 
@@ -69,14 +69,17 @@ def test_load_pitchers_assigns_roles_and_stats(pitchers_file):
     assert swingman.player.role == "SP"
     assert swingman.stats.outs == pytest.approx(float(swingman_proj["IP"]) * 3.0)
     assert swingman.stats.qs == pytest.approx(float(swingman_proj.get("QS", 0.0)))
-    assert swingman.stats.svhd == pytest.approx(0.0)
+    expected_swingman_svhd = swingman_proj.get(
+        "SVHD", swingman_proj.get("SV", 0) + swingman_proj.get("HLD", 0)
+    )
+    assert swingman.stats.svhd == pytest.approx(float(expected_swingman_svhd))
     assert swingman.player.positions == swingman_record["eligible_slots"]
     assert swingman.player.stats is swingman.stats
 
     reliever_with_gs = next(p for p in pitchers if p.player.id == "4734325")
     assert reliever_with_gs.player.role == "SP"
     assert reliever_with_gs.stats.outs == pytest.approx(float(rp_proj["IP"]) * 3.0)
-    assert reliever_with_gs.stats.qs == pytest.approx(1)
+    assert reliever_with_gs.stats.qs == pytest.approx(float(rp_proj.get("QS", 0.0)))
 
     expected_svhd = rp_proj.get("SVHD", rp_proj.get("SV", 0) + rp_proj.get("HLD", 0))
     assert reliever_with_gs.stats.svhd == pytest.approx(float(expected_svhd))
@@ -123,3 +126,41 @@ def test_load_budget_config_reads_fixture(fixtures_dir):
         raw = json.load(f)
 
     assert load_budget_config(budget_file) == raw
+
+
+# ---------- stub-projection PA/IP gate ----------------------------------
+
+
+def test_load_batters_min_projection_pa_filters_low_pa_records(batters_file):
+    """A min_projection_pa above the median PA should drop substantial rows
+    relative to the unfiltered load. Asserts the gate is wired up and the
+    skip-counter log path is hit."""
+    baseline = load_batters(batters_file, source="projs_updated")
+    gated = load_batters(batters_file, source="projs_updated", min_projection_pa=200.0)
+    assert len(gated) < len(baseline)
+    # Every retained hitter clears the threshold.
+    assert all(h.stats.pa >= 200.0 for h in gated)
+
+
+def test_load_batters_min_projection_pa_zero_keeps_everything(batters_file):
+    """A zero floor must be a no-op vs. the default load."""
+    baseline = load_batters(batters_file, source="projs_updated")
+    same = load_batters(batters_file, source="projs_updated", min_projection_pa=0.0)
+    assert len(baseline) == len(same)
+
+
+def test_load_pitchers_min_projection_ip_filters_low_ip_records(pitchers_file):
+    """A min_projection_ip floor should drop call-up / partial-season stubs."""
+    baseline = load_pitchers(pitchers_file, source="projs_updated")
+    gated = load_pitchers(
+        pitchers_file, source="projs_updated", min_projection_ip=30.0
+    )
+    assert len(gated) < len(baseline)
+    # Every retained pitcher clears the threshold (outs / 3 = IP).
+    assert all((p.stats.outs / 3.0) >= 30.0 for p in gated)
+
+
+def test_load_pitchers_min_projection_ip_zero_keeps_everything(pitchers_file):
+    baseline = load_pitchers(pitchers_file, source="projs_updated")
+    same = load_pitchers(pitchers_file, source="projs_updated", min_projection_ip=0.0)
+    assert len(baseline) == len(same)

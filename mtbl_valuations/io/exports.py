@@ -10,8 +10,75 @@ import pandas as pd
 from mtbl_valuations.domain.models import (
     HitterPlayer,
     PitcherPlayer,
+    Player,
     PositionPool,
+    Tier,
 )
+
+# Category to stat attribute mapping for hitters
+_HITTER_STAT_MAP = {
+    "R": lambda stats: stats.r,
+    "HR": lambda stats: stats.hr,
+    "RBI": lambda stats: stats.rbi,
+    "SBN": lambda stats: stats.sbn,
+    "OBP": lambda stats: stats.obp,
+    "SLG": lambda stats: stats.slg,
+}
+
+# Category to stat attribute mapping for pitchers
+_PITCHER_STAT_MAP = {
+    "IP": lambda stats: stats.outs / 3.0,  # Convert outs to IP
+    "ERA": lambda stats: stats.era,
+    "WHIP": lambda stats: stats.whip,
+    "K/9": lambda stats: stats.k9,
+    "QS": lambda stats: stats.qs,
+    "SVHD": lambda stats: stats.svhd,
+}
+
+
+def _build_tier_map(pool: PositionPool) -> dict[str, Tier]:
+    """Build player ID -> tier mapping for a pool.
+
+    Args:
+        pool: Position pool containing players in different tiers
+
+    Returns:
+        Dictionary mapping player IDs to their tier designation
+    """
+    tier_map: dict[str, Tier] = {}
+    for player in pool.rostered_players:
+        tier_map[player.id] = "ROSTERED"
+    for player in pool.replacement_players:
+        tier_map[player.id] = "REPLACEMENT"
+    for player in pool.below_replacement:
+        tier_map[player.id] = "BELOW_REPLACEMENT"
+    return tier_map
+
+
+def _get_position_valuation(
+    player: Player, position: str
+) -> tuple[float, dict[str, float], dict[str, float], float]:
+    """
+    Get position-specific valuation data.
+
+    Returns: (total_z, normalized_z, dollar_values, total_dollars)
+    """
+    if position in player.valuation.valuations_by_position:
+        pos_val = player.valuation.valuations_by_position[position]
+        return (
+            pos_val.total_z,
+            pos_val.normalized_z,
+            pos_val.dollar_values,
+            pos_val.total_dollars,
+        )
+    else:
+        # Fallback to top-level for single-position players
+        return (
+            player.valuation.total_z,
+            player.valuation.normalized_z,
+            player.valuation.dollar_values,
+            player.valuation.total_dollars,
+        )
 
 
 def export_hitter_position_csv(
@@ -23,13 +90,7 @@ def export_hitter_position_csv(
     rows = []
 
     # Determine tier based on which list player is in for THIS pool
-    player_tiers = {}
-    for player in pool.rostered_players:
-        player_tiers[player.id] = "ROSTERED"
-    for player in pool.replacement_players:
-        player_tiers[player.id] = "REPLACEMENT"
-    for player in pool.below_replacement:
-        player_tiers[player.id] = "BELOW_REPLACEMENT"
+    player_tiers = _build_tier_map(pool)
 
     # Export rostered + replacement players from this pool
     # Players may have primary_position != pool.position (e.g., UTIL players in 1B pool)
@@ -42,8 +103,12 @@ def export_hitter_position_csv(
 
         # Get position-specific valuation for THIS pool
         valuation_tier = player_tiers.get(player.id, "UNKNOWN")
-        valuation_total_z = player.valuation.total_z
-        valuation_normalized_z = player.valuation.normalized_z
+        (
+            valuation_total_z,
+            valuation_normalized_z,
+            valuation_dollar_values,
+            valuation_total_dollars,
+        ) = _get_position_valuation(player, pool.position)
 
         row = {
             # Identity
@@ -54,7 +119,7 @@ def export_hitter_position_csv(
             "eligible_positions": "|".join(player.positions),
             "tier": valuation_tier,
             "total_z": round(valuation_total_z, 3),
-            "total_dollars": round(player.valuation.total_dollars, 2),
+            "total_dollars": round(valuation_total_dollars, 2),
         }
 
         # Stats for each category: raw stat, z-score, dollars
@@ -62,24 +127,22 @@ def export_hitter_position_csv(
         hitter_stats = hitter_player.stats
         assert hitter_stats is not None  # type guard
         for cat in categories:
-            # Get raw stat value
-            if cat == "R":
-                raw_val = hitter_stats.r
-            elif cat == "HR":
-                raw_val = hitter_stats.hr
-            elif cat == "RBI":
-                raw_val = hitter_stats.rbi
-            elif cat == "SBN":
-                raw_val = hitter_stats.sbn
-            elif cat == "OBP":
-                raw_val = hitter_stats.obp
-            elif cat == "SLG":
-                raw_val = hitter_stats.slg
-            else:
-                raw_val = 0.0
+            # Get raw stat value using mapping
+            stat_getter = _HITTER_STAT_MAP.get(cat)
+            raw_val = stat_getter(hitter_stats) if stat_getter else 0.0
 
             row[f"{cat}_raw"] = round(raw_val, 3)
             row[f"{cat}_z"] = round(valuation_normalized_z.get(cat, 0.0), 3)
+
+        # Sabermetric / Savant diagnostics (not valuation inputs).
+        # x* and sprint_speed are None when the player has no Savant record.
+        row["woba"] = round(hitter_stats.woba, 3)
+        row["wraa"] = round(hitter_stats.wraa, 2)
+        row["xwoba"] = hitter_stats.xwoba
+        row["xobp"] = hitter_stats.xobp
+        row["xslg"] = hitter_stats.xslg
+        row["xhr"] = hitter_stats.xhr
+        row["sprint_speed"] = hitter_stats.sprint_speed
 
         rows.append(row)
 
@@ -99,13 +162,7 @@ def export_pitcher_pool_csv(
     rows = []
 
     # Determine tier based on which list player is in for THIS pool
-    player_tiers = {}
-    for player in pool.rostered_players:
-        player_tiers[player.id] = "ROSTERED"
-    for player in pool.replacement_players:
-        player_tiers[player.id] = "REPLACEMENT"
-    for player in pool.below_replacement:
-        player_tiers[player.id] = "BELOW_REPLACEMENT"
+    player_tiers = _build_tier_map(pool)
 
     # Export rostered + replacement players from this pool
     # Players may have primary_position != pool.position (e.g., UTIL players in 1B pool)
@@ -116,6 +173,14 @@ def export_pitcher_pool_csv(
             "Player missing stats"
         )
 
+        # Get position-specific valuation for THIS pool
+        (
+            valuation_total_z,
+            valuation_normalized_z,
+            valuation_dollar_values,
+            valuation_total_dollars,
+        ) = _get_position_valuation(player, pool.position)
+
         row = {
             # Identity
             "id": player.id,
@@ -124,8 +189,8 @@ def export_pitcher_pool_csv(
             "primary_position": player.valuation.primary_position,
             "eligible_positions": "|".join(player.positions),
             "tier": player_tiers.get(player.id, "UNKNOWN"),
-            "total_z": round(player.valuation.total_z, 3),
-            "total_dollars": round(player.valuation.total_dollars, 2),
+            "total_z": round(valuation_total_z, 3),
+            "total_dollars": round(valuation_total_dollars, 2),
         }
 
         # Stats for each category: raw stat, z-score, dollars
@@ -133,21 +198,9 @@ def export_pitcher_pool_csv(
         pitcher_stats = pitcher_player.stats
         assert pitcher_stats is not None  # type guard
         for cat in categories:
-            # Get raw stat value
-            if cat == "IP":
-                raw_val = pitcher_stats.outs / 3.0  # Convert outs to IP
-            elif cat == "ERA":
-                raw_val = pitcher_stats.era
-            elif cat == "WHIP":
-                raw_val = pitcher_stats.whip
-            elif cat == "K/9":
-                raw_val = pitcher_stats.k9
-            elif cat == "QS":
-                raw_val = pitcher_stats.qs
-            elif cat == "SVHD":
-                raw_val = pitcher_stats.svhd
-            else:
-                raw_val = 0.0
+            # Get raw stat value using mapping
+            stat_getter = _PITCHER_STAT_MAP.get(cat)
+            raw_val = stat_getter(pitcher_stats) if stat_getter else 0.0
 
             row[f"{cat}_raw"] = round(raw_val, 3)
 
@@ -155,10 +208,13 @@ def export_pitcher_pool_csv(
             if pool.position == "RP" and cat == "IP":
                 continue
 
-            row[f"{cat}_z"] = round(player.valuation.normalized_z.get(cat, 0.0), 3)
-            row[f"{cat}_dollars"] = round(
-                player.valuation.dollar_values.get(cat, 0.0), 2
-            )
+            row[f"{cat}_z"] = round(valuation_normalized_z.get(cat, 0.0), 3)
+            row[f"{cat}_dollars"] = round(valuation_dollar_values.get(cat, 0.0), 2)
+
+        # Savant diagnostics (not valuation inputs).
+        # None when the player has no Savant expected-statistics record.
+        row["xera"] = pitcher_stats.xera
+        row["xwoba"] = pitcher_stats.xwoba
 
         rows.append(row)
 

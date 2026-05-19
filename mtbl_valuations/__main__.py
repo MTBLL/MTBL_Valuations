@@ -6,7 +6,8 @@ from pathlib import Path
 import click
 
 from mtbl_valuations.config import LOAD_OUTPUT_DIR, TRANSFORM_OUTPUT_DIR
-from mtbl_valuations.engine.pipeline import run_trp_valuation
+from mtbl_valuations.engine.pipeline import run_all_valuations
+from mtbl_valuations.utils.log import configure_logging
 
 
 @click.group()
@@ -51,25 +52,68 @@ def cli() -> None:
     show_default=True,
     help="Output directory for valuation results",
 )
+@click.option(
+    "-v",
+    "--verbose",
+    count=True,
+    help="Increase log verbosity. Default: warnings only. "
+    "-v: INFO (progress, skip counts). -vv: DEBUG (per-record detail, "
+    "e.g. each player skipped for missing projections).",
+)
+@click.option(
+    "--log-level",
+    type=click.Choice(["WARNING", "INFO", "DEBUG"], case_sensitive=False),
+    default=None,
+    help="Set log level explicitly. Overrides -v/--verbose when given.",
+)
+@click.option(
+    "--iter-log-level",
+    type=click.Choice(["INSIGHTS", "DEBUG", "OFF"], case_sensitive=False),
+    default="INSIGHTS",
+    show_default=True,
+    help="Per-iteration log dump level for hitter convergence + budget phases. "
+    "INSIGHTS: players + tiers + total_z + RLP one-liner. "
+    "DEBUG: full per-category raw / z / $ tables. OFF: no per-iter dumps.",
+)
+@click.option(
+    "--logs-dir",
+    type=click.Path(path_type=Path),
+    default=Path("logs"),
+    show_default=True,
+    help="Root directory for iteration logs. A timestamped subdir is created per run.",
+)
 def hydrate(
     batters_file: Path,
     pitchers_file: Path,
     league_file: Path,
     budget_config: Path,
     output_dir: Path,
+    verbose: int,
+    log_level: str | None,
+    iter_log_level: str,
+    logs_dir: Path,
 ) -> None:
     """Run TRP (True Replacement Price) valuation engine.
 
     Processes player projections and calculates market-calibrated dollar values
-    using Z-scores and replacement level baselines.
+    using Z-scores and replacement level baselines. Valuations are produced for
+    all three Fangraphs projection sources (preseason, updated, ros): per-source
+    CSVs land in subdirectories of the output dir, with a single merged
+    hitters.json / pitchers.json holding every source.
     """
+    configure_logging(verbosity=verbose, log_level=log_level)
+    iter_lvl: str | None = (
+        None if iter_log_level.upper() == "OFF" else iter_log_level.upper()
+    )
     try:
-        run_trp_valuation(
+        run_all_valuations(
             batters_file,
             pitchers_file,
             league_file,
             budget_config,
             output_dir,
+            iter_log_level=iter_lvl,
+            logs_dir=logs_dir,
         )
     except KeyboardInterrupt:
         print("\n\n✗ Process interrupted by user\n", file=sys.stderr)

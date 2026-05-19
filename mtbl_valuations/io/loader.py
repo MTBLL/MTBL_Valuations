@@ -14,20 +14,80 @@ from ..domain.models import (
     Player,
     Valuation,
 )
+from ..utils.log import get_logger
+
+logger = get_logger(__name__)
+
+# Upstream nests three Fangraphs projection sets under stats.fangraphs:
+#   projections    - preseason projection (full season)
+#   projs_updated  - in-season updated full-season projection
+#   ros            - rest-of-season projection (only published for active
+#                    MLB-universe players; null for minors/NRI/FA/IL-60)
+ProjectionSource = Literal["projections", "projs_updated", "ros"]
+
+# A valuation source is a raw Fangraphs projection set, the "synthetic"
+# source derived from Statcast data (see io/synthetic.py), or the "current"
+# source built from current-season actuals (see io/current.py).
+ValuationSource = Literal[
+    "projections", "projs_updated", "ros", "synthetic", "current"
+]
 
 
-def load_batters(file_path: Path) -> list[HitterPlayer]:
-    """Load and normalize batter data from batters_matched.json."""
+def load_batters(
+    file_path: Path,
+    source: ProjectionSource = "projections",
+    min_projection_pa: float = 0.0,
+) -> list[HitterPlayer]:
+    """Load and normalize batter data from batters_matched.json.
+
+    Args:
+        file_path: Path to batters_matched.json
+        source: Which Fangraphs projection set to value against. See
+            ProjectionSource. Players with no projection for the chosen source
+            are skipped (e.g. most players have no ``ros`` line).
+        min_projection_pa: Skip players with projected PA below this floor.
+            ``projs_updated`` (and to a lesser extent ``projections`` / ``ros``)
+            publishes stub lines for partial-season call-ups — small-PA
+            projections with elite rate stats that would otherwise flood the
+            rostered tier (e.g. a 94-PA SS with .420 OBP getting $23 OBP $).
+    """
     with open(file_path) as f:
         data = json.load(f)
 
     hitter_players: list[HitterPlayer] = []
+    skipped_no_projections = 0
+    skipped_low_pa = 0
 
     for record in data:
-        # Skip if no statistics or projections
-        assert "stats" in record and "projections" in record["stats"]
+        # Upstream restructured stats: Fangraphs projections now live under
+        # stats.fangraphs.{projections,projs_updated,ros}
+        assert "stats" in record and "fangraphs" in record["stats"]
 
-        proj = record["stats"]["projections"]
+        proj = record["stats"]["fangraphs"].get(source)
+
+        # Skip players with no projection for this source (prospects, inactive
+        # roster, or — for ros — anyone outside the active MLB universe).
+        if not proj:
+            skipped_no_projections += 1
+            logger.debug(
+                "No Fangraphs %s for batter %s (id_espn=%s) — skipping",
+                source,
+                record.get("name", "<unknown>"),
+                record.get("id_espn", "<unknown>"),
+            )
+            continue
+
+        # Stub-projection guard: drop part-time / call-up projections that
+        # would otherwise drag elite rate stats into the rostered tier.
+        if float(proj.get("PA", 0.0)) < min_projection_pa:
+            skipped_low_pa += 1
+            logger.debug(
+                "Low projected PA for batter %s (id_espn=%s, PA=%.1f) — skipping",
+                record.get("name", "<unknown>"),
+                record.get("id_espn", "<unknown>"),
+                float(proj.get("PA", 0.0)),
+            )
+            continue
 
         # Ensure required projection fields exist
         assert all(
@@ -50,6 +110,13 @@ def load_batters(file_path: Path) -> list[HitterPlayer]:
         # Calculate SBN (Net SB = SB - CS)
         sbn = proj.get("SBN", proj.get("SB", 0) - proj.get("CS", 0))
 
+        # Savant diagnostics — observed Statcast data, absent for ~70% of
+        # players. Sub-sections default to {} so missing data yields None.
+        savant = record["stats"].get("savant") or {}
+        savant_all = savant.get("all") or {}
+        savant_hr = savant.get("home_runs") or {}
+        savant_speed = savant.get("sprint_speed") or {}
+
         stats = HitterStats(
             pa=float(proj["PA"]),
             ab=float(proj["AB"]),
@@ -60,6 +127,13 @@ def load_batters(file_path: Path) -> list[HitterPlayer]:
             obp=float(proj["OBP"]),
             slg=float(proj["SLG"]),
             wrc_plus=float(proj.get("wRC+", 100.0)),
+            woba=float(proj.get("wOBA", 0.0)),
+            wraa=float(proj.get("wRAA", 0.0)),
+            xwoba=savant_all.get("xwOBA"),
+            xobp=savant_all.get("xOBP"),
+            xslg=savant_all.get("xSLG"),
+            xhr=savant_hr.get("xHR"),
+            sprint_speed=savant_speed.get("sprint_speed"),
         )
 
         player = Player(
@@ -75,21 +149,74 @@ def load_batters(file_path: Path) -> list[HitterPlayer]:
 
         hitter_players.append(HitterPlayer(player=player, stats=stats))
 
+    if skipped_no_projections:
+        logger.info(
+            "Skipped %d batters with no Fangraphs %s", skipped_no_projections, source
+        )
+    if skipped_low_pa:
+        logger.info(
+            "Skipped %d batters with Fangraphs %s PA < %.0f (stub projections)",
+            skipped_low_pa,
+            source,
+            min_projection_pa,
+        )
+
     return hitter_players
 
 
-def load_pitchers(file_path: Path) -> list[PitcherPlayer]:
-    """Load and normalize pitcher data from pitchers_matched.json."""
+def load_pitchers(
+    file_path: Path,
+    source: ProjectionSource = "projections",
+    min_projection_ip: float = 0.0,
+) -> list[PitcherPlayer]:
+    """Load and normalize pitcher data from pitchers_matched.json.
+
+    Args:
+        file_path: Path to pitchers_matched.json
+        source: Which Fangraphs projection set to value against. See
+            ProjectionSource. Players with no projection for the chosen source
+            are skipped (e.g. most players have no ``ros`` line).
+        min_projection_ip: Skip pitchers with projected IP below this floor.
+            Filters out call-up / partial-season stub projections that would
+            otherwise float into the rostered tier on elite rate stats × tiny
+            innings totals.
+    """
     with open(file_path) as f:
         data = json.load(f)
 
     pitcher_players: list[PitcherPlayer] = []
+    skipped_no_projections = 0
+    skipped_low_ip = 0
 
     for record in data:
-        # Skip if no projections
-        assert "stats" in record and "projections" in record["stats"]
+        # Upstream restructured stats: Fangraphs projections now live under
+        # stats.fangraphs.{projections,projs_updated,ros}
+        assert "stats" in record and "fangraphs" in record["stats"]
 
-        proj = record["stats"]["projections"]
+        proj = record["stats"]["fangraphs"].get(source)
+
+        # Skip players with no projection for this source (prospects, inactive
+        # roster, or — for ros — anyone outside the active MLB universe).
+        if not proj:
+            skipped_no_projections += 1
+            logger.debug(
+                "No Fangraphs %s for pitcher %s (id_espn=%s) — skipping",
+                source,
+                record.get("name", "<unknown>"),
+                record.get("id_espn", "<unknown>"),
+            )
+            continue
+
+        # Stub-projection guard for pitchers (mirror of hitter PA gate).
+        if float(proj.get("IP", 0.0)) < min_projection_ip:
+            skipped_low_ip += 1
+            logger.debug(
+                "Low projected IP for pitcher %s (id_espn=%s, IP=%.1f) — skipping",
+                record.get("name", "<unknown>"),
+                record.get("id_espn", "<unknown>"),
+                float(proj.get("IP", 0.0)),
+            )
+            continue
 
         # Determine role from primary_position
         primary_pos = record.get("primary_position", "")
@@ -110,6 +237,11 @@ def load_pitchers(file_path: Path) -> list[PitcherPlayer]:
         # Convert IP to outs
         outs = proj.get("OUTS", float(proj["IP"]) * 3)
 
+        # Savant diagnostics — observed Statcast data, absent for ~70% of
+        # players. Sub-section defaults to {} so missing data yields None.
+        savant = record["stats"].get("savant") or {}
+        savant_exp = savant.get("expected_statistics") or {}
+
         stats = PitcherStats(
             outs=outs,
             era=proj.get("ERA"),
@@ -118,6 +250,8 @@ def load_pitchers(file_path: Path) -> list[PitcherPlayer]:
             qs=proj.get("QS", 0),
             svhd=svhd,
             fip=proj.get("FIP"),
+            xera=savant_exp.get("xERA"),
+            xwoba=savant_exp.get("xwOBA"),
         )
 
         player = Player(
@@ -132,6 +266,18 @@ def load_pitchers(file_path: Path) -> list[PitcherPlayer]:
         )
 
         pitcher_players.append(PitcherPlayer(player=player, stats=stats))
+
+    if skipped_no_projections:
+        logger.info(
+            "Skipped %d pitchers with no Fangraphs %s", skipped_no_projections, source
+        )
+    if skipped_low_ip:
+        logger.info(
+            "Skipped %d pitchers with Fangraphs %s IP < %.0f (stub projections)",
+            skipped_low_ip,
+            source,
+            min_projection_ip,
+        )
 
     return pitcher_players
 

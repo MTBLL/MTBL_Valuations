@@ -16,7 +16,9 @@
       "Bash(uv add:*)",
       "Bash(tee:*)",
       "Bash(grep:*)",
-      "Bash(git push)"
+      "Bash(git push)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

@@ -147,38 +147,30 @@ def calc_pool_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, Positio
     """
     Calculate $/Z conversion rate for each position-category.
 
-    Uses baseline shift to handle negative Z-scores: shifts all Z-scores up by the
-    minimum value so the worst player gets $0 and budget is distributed proportionally
-    based on relative differences.
+    Path B (settled-z) contract: each pool's per-cat z-scores already live
+    on the player (as settled, non-negative-clamped values) — written by
+    the iteration loop. Prefer ``valuations_by_position[pool.position]``
+    when present so cross-pool players (e.g. a UTIL replacement-tier
+    player who's also in 1B's replacement tier) get the right pool's
+    z-score for THIS pool's $/Z calibration, even if a later swap-pass
+    refreshed their top-level ``normalized_z`` for another pool.
     """
-    pools = pools
     for pool in pools.values():
         pool.dollars_per_z = {}
         pool.total_pool_z = {}
-        pool.z_baseline_shift = {}
+        pos = pool.position
 
         for category in pool.category_budgets.keys():
-            # Get all Z-scores for this category
-            category_z_scores = [
-                player.valuation.normalized_z.get(category, 0.0)
-                for player in pool.rostered_players
-            ]
-
-            # Find minimum Z-score
-            min_z = min(category_z_scores) if category_z_scores else 0.0
-
-            # Apply baseline shift if there are negative Z-scores
-            if min_z < 0:
-                # Shift all Z-scores up so minimum becomes 0
-                baseline_shift = -min_z
-                pool.z_baseline_shift[category] = baseline_shift
-                adjusted_z_scores = [z + baseline_shift for z in category_z_scores]
-                pool_cat_total_z = sum(adjusted_z_scores)
-            else:
-                # No negative Z-scores, no shift needed
-                pool.z_baseline_shift[category] = 0.0
-                pool_cat_total_z = sum(category_z_scores)
-
+            category_z_scores = []
+            for player in pool.rostered_players:
+                pv = player.valuation.valuations_by_position.get(pos)
+                if pv is not None and pv.normalized_z:
+                    category_z_scores.append(pv.normalized_z.get(category, 0.0))
+                else:
+                    category_z_scores.append(
+                        player.valuation.normalized_z.get(category, 0.0)
+                    )
+            pool_cat_total_z = sum(category_z_scores)
             pool.total_pool_z[category] = pool_cat_total_z
 
             assert pool_cat_total_z > 0, (

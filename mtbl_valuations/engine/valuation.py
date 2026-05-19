@@ -27,12 +27,53 @@ def get_categories(role: Role, league_settings: dict[str, Any]) -> list[str]:
         return ["IP" if c == "OUTS" else c for c in cats if c != "QS"]
 
 
-def calc_means(
-    players: list[Player], field: str, is_stat: bool = True
-) -> dict[str, float]:
-    """Calculate means for all categories."""
+def _extract_category_values(
+    players: list[Player], category: str, field: str, is_stat: bool
+) -> list[float]:
+    """Extract values for a specific category from a list of players.
+
+    Args:
+        players: List of players to extract values from
+        category: Category name to extract (e.g., 'HR', 'R', 'ERA')
+        field: Field name to access (e.g., 'normalized_z', 'raw_z')
+        is_stat: If True, extract from player.stats; if False, from player.valuation
+
+    Returns:
+        List of float values for the category
+    """
+    values = []
+    for player in players:
+        obj = player.stats if is_stat else player.valuation
+
+        if isinstance(obj, dict):
+            val = obj.get(category, 0.0)
+        elif hasattr(obj, field):
+            attr = getattr(obj, field, {})
+            val = attr.get(category, 0.0) if isinstance(attr, dict) else 0.0
+        elif hasattr(obj, category):
+            val = getattr(obj, category, 0.0)
+        else:
+            val = 0.0
+
+        if isinstance(val, (int, float)):
+            values.append(float(val))
+
+    return values
+
+
+def _get_categories(players: list[Player], field: str, is_stat: bool) -> list[str]:
+    """Determine categories from first player.
+
+    Args:
+        players: List of players
+        field: Field name to access
+        is_stat: If True, look at player.stats; if False, at player.valuation
+
+    Returns:
+        List of category names
+    """
     if not players:
-        return {}
+        return []
 
     # Get first player to determine categories
     if (
@@ -40,44 +81,39 @@ def calc_means(
         if is_stat
         else not hasattr(players[0], "computed")
     ):
-        return {}
+        return []
 
     sample_obj = players[0].stats if is_stat else players[0].valuation
 
-
     # Handle dict-type fields (like raw_z, normalized_z)
     if isinstance(sample_obj, dict):
-        categories = list(sample_obj.keys())
+        return list(sample_obj.keys())
     elif hasattr(sample_obj, field):
         # For nested dict access like stats.category or computed.raw_z
         attr = getattr(sample_obj, field, {})
         if isinstance(attr, dict):
-            categories = list(attr.keys())
+            return list(attr.keys())
         else:
-            return {}
+            return []
     else:
         # Direct attribute access
-        categories = [k for k in dir(sample_obj) if not k.startswith("_")]
+        return [k for k in dir(sample_obj) if not k.startswith("_")]
+
+
+def calc_means(
+    players: list[Player], field: str, is_stat: bool = True
+) -> dict[str, float]:
+    """Calculate means for all categories."""
+    if not players:
+        return {}
+
+    categories = _get_categories(players, field, is_stat)
+    if not categories:
+        return {}
 
     means = {}
     for cat in categories:
-        values = []
-        for player in players:
-            obj = player.stats if is_stat else player.valuation
-
-            if isinstance(obj, dict):
-                val = obj.get(cat, 0.0)
-            elif hasattr(obj, field):
-                attr = getattr(obj, field, {})
-                val = attr.get(cat, 0.0) if isinstance(attr, dict) else 0.0
-            elif hasattr(obj, cat):
-                val = getattr(obj, cat, 0.0)
-            else:
-                val = 0.0
-
-            if isinstance(val, (int, float)):
-                values.append(float(val))
-
+        values = _extract_category_values(players, cat, field, is_stat)
         if values:
             means[cat] = sum(values) / len(values)
 
@@ -97,23 +133,7 @@ def calc_stdevs(
 
     stdevs = {}
     for cat in means.keys():
-        values = []
-        for player in players:
-            obj = player.stats if is_stat else player.valuation
-
-            if isinstance(obj, dict):
-                val = obj.get(cat, 0.0)
-            elif hasattr(obj, field):
-                attr = getattr(obj, field, {})
-                val = attr.get(cat, 0.0) if isinstance(attr, dict) else 0.0
-            elif hasattr(obj, cat):
-                val = getattr(obj, cat, 0.0)
-            else:
-                val = 0.0
-
-            if isinstance(val, (int, float)):
-                values.append(float(val))
-
+        values = _extract_category_values(players, cat, field, is_stat)
         if values and len(values) > 1:
             mean = means[cat]
             variance = sum((v - mean) ** 2 for v in values) / len(values)
@@ -158,34 +178,84 @@ def get_player_stat(player: Player, category: str) -> float:
     return float(value)
 
 
-def distribute_player_dollars(player: Player, pool: PositionPool) -> dict[str, float]:
+def distribute_player_dollars(
+    player: Player, pool: PositionPool, store_in_position_valuation: bool = False
+) -> dict[str, float]:
     """
     Calculate dollar values per category for a player.
 
-    For rostered players: applies baseline shift to ensure minimum $1 value
-    For replacement/below players: applies direct $/Z without baseline shift
+    Path B contract: ``normalized_z`` is already settled (post-shift,
+    non-negative-clamped) by the iteration loop, and the SAME formula is
+    applied across every tier. This guarantees rostered prices ≥ RLP prices
+    for any two players sorted by settled total_z, because:
+
+      - Ranks: rostered = top N by settled total_z
+      - Dollars: ``$ = sum_c settled_z[c] * $/Z[c]``
+      - Both consume the same metric, so order is preserved.
+
+    Args:
+        player: The player to calculate dollars for
+        pool: The position pool context
+        store_in_position_valuation: If True, stores results in valuations_by_position
+
+    Returns:
+        Dictionary of dollar values per category
     """
-    dollar_values = {}
+    # Prefer per-position normalized_z when present, regardless of the
+    # store flag. This keeps the read source symmetric with
+    # ``calc_pool_dollars_per_z`` so $/Z calibration and per-player dollar
+    # distribution agree — otherwise cross-pool players whose top-level
+    # ``normalized_z`` was set by another pool's recompute would distribute
+    # against a different z than the $/Z calibration used.
+    pv = player.valuation.valuations_by_position.get(pool.position)
+    if pv is not None and pv.normalized_z:
+        normalized_z = pv.normalized_z
+    else:
+        normalized_z = player.valuation.normalized_z
 
-    # Check if player is rostered in this pool
-    is_rostered = player in pool.rostered_players
+    dollar_values = {
+        category: z_value * pool.dollars_per_z.get(category, 0.0)
+        for category, z_value in normalized_z.items()
+    }
 
-    for category, z_value in player.valuation.normalized_z.items():
-        rate = pool.dollars_per_z.get(category, 0.0)
-
-        if is_rostered:
-            # Rostered players: apply baseline shift
-            baseline_shift = pool.z_baseline_shift.get(category, 0.0)
-            adjusted_z = z_value + baseline_shift
-            # Ensure no negative dollars
-            adjusted_z = max(0.0, adjusted_z)
-        else:
-            # Replacement/below players: direct $/Z (can be negative/zero)
-            adjusted_z = z_value
-
-        dollar_values[category] = adjusted_z * rate
+    if store_in_position_valuation and pool.position in player.valuation.valuations_by_position:
+        player.valuation.valuations_by_position[pool.position].dollar_values = dollar_values
+        player.valuation.valuations_by_position[pool.position].total_dollars = sum(dollar_values.values())
 
     return dollar_values
+
+
+def distribute_pool_dollars(
+    pools: dict[str, PositionPool],
+    store_per_position: bool = False,
+) -> None:
+    """
+    Distribute dollar values to all players across multiple position pools.
+
+    For multi-position players (hitters with eligibility at multiple positions):
+    - Calculates dollars for each position they're eligible at
+    - Stores position-specific values in valuations_by_position[pos]
+    - Stores top-level dollar_values/total_dollars only for their primary position
+
+    For single-position players (pitchers):
+    - Calculates and stores dollars directly at top-level
+
+    Args:
+        pools: Dictionary of position pools with budgets and $/Z rates already calculated
+        store_per_position: If True, stores values in valuations_by_position for multi-eligible players
+    """
+    for pos, pool in pools.items():
+        for player in pool.rostered_players + pool.replacement_players:
+            # Calculate dollar values for this position
+            dollar_values = distribute_player_dollars(
+                player, pool, store_in_position_valuation=store_per_position
+            )
+            total_dollars = sum(dollar_values.values())
+
+            # Store at top level if this is the player's primary position
+            if player.valuation.primary_position == pos:
+                player.valuation.dollar_values = dollar_values
+                player.valuation.total_dollars = total_dollars
 
 
 def calc_z_scores_for_archetype(

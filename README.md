@@ -1,6 +1,43 @@
 # MTBL Valuations
 MTBL Valuations after transform pipeline.  This script adds the valuations to the MTBL data.
 
+## Usage
+
+```bash
+mtbl-valuations hydrate [OPTIONS]
+```
+
+By default the engine reads `batters_matched.json`, `pitchers_matched.json`, and
+the league summary from `/Users/Shared/BaseballHQ/resources/transform/` (the
+*published* transform output — note this is distinct from the upstream
+`Player_Universe_Trx/.temp/` scratch directory). Override any input with
+`--batters-file`, `--pitchers-file`, `--league-file`, or `--budget-config`.
+
+### Logging & verbosity
+
+The engine logs under the `mtbl_valuations` logger namespace. Verbosity is off by
+default (warnings only) and is raised with repeatable `-v` flags or set
+explicitly with `--log-level`:
+
+| Flag            | Level   | What you see                                                             |
+| --------------- | ------- | ------------------------------------------------------------------------ |
+| *(none)*        | WARNING | Quiet — only problems. Pipeline phase progress still prints to stdout.    |
+| `-v`            | INFO    | High-level notes, e.g. `Skipped 44 batters with no Fangraphs projections`. |
+| `-vv`           | DEBUG   | Per-record detail — every player skipped for missing projections, with `id_espn`. |
+| `--log-level X` | X       | Set `WARNING`/`INFO`/`DEBUG` explicitly. Overrides `-v` when both given.  |
+
+```bash
+mtbl-valuations hydrate -v        # INFO: why is the player count different from last night?
+mtbl-valuations hydrate -vv       # DEBUG: exactly which players were dropped
+mtbl-valuations hydrate --log-level DEBUG
+```
+
+Use `-vv` when the loaded player count looks off: upstream emits prospects and
+inactive-roster players with `projections: null`, and the loader skips them —
+DEBUG names each one.
+
+## Ideation
+
 let's ideate a bit on this. the end goal is to produce a multi part blog post for this framework. while this draft is succinct enough for a code repo and helps build the intuition needed to put the proper programmatic structures in place, it doesn't explain the whys sufficiently. For example, why, really, is it that catcher who hits 20 HRs not the same as the first basement who hits 20 HR? What mathematical or philosophical (logical) principle allows us to defy a universal truth that 20 == 20. 
 
 Additionally, for the blog post it will be essential to share my inspiration, Keith Woolner's work on Value Over Replacement Player https://web.archive.org/web/20071013172219/http://stathead.com/bbeng/woolner/vorpdescnew.htm, and Zach Sanders's work on Fantasy Value Above Replacement https://fantasy.fangraphs.com/value-above-replacement-part-one/.  My ideas contribute to the conversation because Zach's work lacks logic for replacement level player generation, or how each stat group can be valued differently. -- these things would certain be captured in a longer format blog post.
