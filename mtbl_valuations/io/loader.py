@@ -34,7 +34,9 @@ ValuationSource = Literal[
 
 
 def load_batters(
-    file_path: Path, source: ProjectionSource = "projections"
+    file_path: Path,
+    source: ProjectionSource = "projections",
+    min_projection_pa: float = 0.0,
 ) -> list[HitterPlayer]:
     """Load and normalize batter data from batters_matched.json.
 
@@ -43,12 +45,18 @@ def load_batters(
         source: Which Fangraphs projection set to value against. See
             ProjectionSource. Players with no projection for the chosen source
             are skipped (e.g. most players have no ``ros`` line).
+        min_projection_pa: Skip players with projected PA below this floor.
+            ``projs_updated`` (and to a lesser extent ``projections`` / ``ros``)
+            publishes stub lines for partial-season call-ups — small-PA
+            projections with elite rate stats that would otherwise flood the
+            rostered tier (e.g. a 94-PA SS with .420 OBP getting $23 OBP $).
     """
     with open(file_path) as f:
         data = json.load(f)
 
     hitter_players: list[HitterPlayer] = []
     skipped_no_projections = 0
+    skipped_low_pa = 0
 
     for record in data:
         # Upstream restructured stats: Fangraphs projections now live under
@@ -66,6 +74,18 @@ def load_batters(
                 source,
                 record.get("name", "<unknown>"),
                 record.get("id_espn", "<unknown>"),
+            )
+            continue
+
+        # Stub-projection guard: drop part-time / call-up projections that
+        # would otherwise drag elite rate stats into the rostered tier.
+        if float(proj.get("PA", 0.0)) < min_projection_pa:
+            skipped_low_pa += 1
+            logger.debug(
+                "Low projected PA for batter %s (id_espn=%s, PA=%.1f) — skipping",
+                record.get("name", "<unknown>"),
+                record.get("id_espn", "<unknown>"),
+                float(proj.get("PA", 0.0)),
             )
             continue
 
@@ -133,12 +153,21 @@ def load_batters(
         logger.info(
             "Skipped %d batters with no Fangraphs %s", skipped_no_projections, source
         )
+    if skipped_low_pa:
+        logger.info(
+            "Skipped %d batters with Fangraphs %s PA < %.0f (stub projections)",
+            skipped_low_pa,
+            source,
+            min_projection_pa,
+        )
 
     return hitter_players
 
 
 def load_pitchers(
-    file_path: Path, source: ProjectionSource = "projections"
+    file_path: Path,
+    source: ProjectionSource = "projections",
+    min_projection_ip: float = 0.0,
 ) -> list[PitcherPlayer]:
     """Load and normalize pitcher data from pitchers_matched.json.
 
@@ -147,12 +176,17 @@ def load_pitchers(
         source: Which Fangraphs projection set to value against. See
             ProjectionSource. Players with no projection for the chosen source
             are skipped (e.g. most players have no ``ros`` line).
+        min_projection_ip: Skip pitchers with projected IP below this floor.
+            Filters out call-up / partial-season stub projections that would
+            otherwise float into the rostered tier on elite rate stats × tiny
+            innings totals.
     """
     with open(file_path) as f:
         data = json.load(f)
 
     pitcher_players: list[PitcherPlayer] = []
     skipped_no_projections = 0
+    skipped_low_ip = 0
 
     for record in data:
         # Upstream restructured stats: Fangraphs projections now live under
@@ -170,6 +204,17 @@ def load_pitchers(
                 source,
                 record.get("name", "<unknown>"),
                 record.get("id_espn", "<unknown>"),
+            )
+            continue
+
+        # Stub-projection guard for pitchers (mirror of hitter PA gate).
+        if float(proj.get("IP", 0.0)) < min_projection_ip:
+            skipped_low_ip += 1
+            logger.debug(
+                "Low projected IP for pitcher %s (id_espn=%s, IP=%.1f) — skipping",
+                record.get("name", "<unknown>"),
+                record.get("id_espn", "<unknown>"),
+                float(proj.get("IP", 0.0)),
             )
             continue
 
@@ -225,6 +270,13 @@ def load_pitchers(
     if skipped_no_projections:
         logger.info(
             "Skipped %d pitchers with no Fangraphs %s", skipped_no_projections, source
+        )
+    if skipped_low_ip:
+        logger.info(
+            "Skipped %d pitchers with Fangraphs %s IP < %.0f (stub projections)",
+            skipped_low_ip,
+            source,
+            min_projection_ip,
         )
 
     return pitcher_players

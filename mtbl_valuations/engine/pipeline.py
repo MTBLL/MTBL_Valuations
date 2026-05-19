@@ -180,8 +180,19 @@ def _run_trp_valuation_inner(
         pitcher_players = load_pitchers_current(pitchers_file, qualified_pa)
     else:
         # mypy narrows `source` to ProjectionSource in this branch.
-        hitter_players = load_batters(batters_file, source)
-        pitcher_players = load_pitchers(pitchers_file, source)
+        # Stub-projection guards: drop call-up / partial-season lines with
+        # tiny PA/IP that would otherwise leak elite rate stats into the
+        # rostered tier. ``current`` and ``synthetic`` apply their own
+        # sliding qualified gates, so they don't need this.
+        qualified_cfg = budget_config.get("qualified", {}) or {}
+        min_proj_pa = float(qualified_cfg.get("min_projection_pa", 0.0))
+        min_proj_ip = float(qualified_cfg.get("min_projection_ip", 0.0))
+        hitter_players = load_batters(
+            batters_file, source, min_projection_pa=min_proj_pa
+        )
+        pitcher_players = load_pitchers(
+            pitchers_file, source, min_projection_ip=min_proj_ip
+        )
 
     ros_slots = league_settings["roster_slots"]
     num_teams = league_settings["num_teams"]
