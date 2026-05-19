@@ -36,6 +36,76 @@ Use `-vv` when the loaded player count looks off: upstream emits prospects and
 inactive-roster players with `projections: null`, and the loader skips them —
 DEBUG names each one.
 
+## Outputs
+
+`mtbl-valuations hydrate` runs the valuation engine once per **valuation
+source** (`preseason`, `updated`, `ros`, `synthetic`, `current` — five total)
+and writes two kinds of artifacts under `--output-dir`:
+
+```
+<output-dir>/
+├── hitters.json                 ← merged across all 5 sources
+├── pitchers.json                ← merged across all 5 sources
+├── preseason/
+│   └── position_summary.csv     ← pool-level aggregates for this source
+├── updated/
+│   └── position_summary.csv
+├── ros/
+│   └── position_summary.csv
+├── synthetic/
+│   └── position_summary.csv
+└── current/
+    └── position_summary.csv
+```
+
+### `hitters.json` / `pitchers.json` (top-level, merged)
+
+The canonical per-player output. Each record matches the upstream
+`batters_matched.json` / `pitchers_matched.json` schema with two enrichments:
+
+1. **`stats.savant.*` is enriched with `<field>_pct_rnk` columns** — percentile
+   ranks for every numeric Savant field, computed against the **current**
+   source's settled rostered + replacement-level player universe. Direction-aware:
+   `K_pct`, `swing_miss_pct`, ERA, WHIP, xwOBA-against, etc. are inverted so
+   `pct_rnk` always means *good performance for that role* regardless of stat
+   polarity.
+2. **`valuations` is a dict keyed by source label** — `{preseason, updated,
+   ros, synthetic, current}`. Each source-block carries `primary_position`,
+   `tier`, `total_z`, `total_dollars`, `z_scores` (per category), and
+   `dollar_values` (per category).
+
+This is the single artifact downstream consumers should read. Per-source CSVs
+and per-source JSONs are intentionally **not** written because every per-player
+field they used to expose is already in this merged JSON — see the rationale
+below.
+
+### `<source>/position_summary.csv` (per-source, pool-level)
+
+The only artifact written *per-source*. Pool-level aggregates that aren't
+carried in the per-player JSON. One row per (position, role) pool, with
+columns:
+
+- `rostered_count`, `replacement_tier_count`
+- `total_budget`, `budget_<cat>` (per-category dollar pots)
+- `pool_total_z_<cat>` (sum of settled z's in the rostered tier)
+- `dollars_per_z_<cat>` (the $/z conversion rate the engine settled on)
+- `replacement_baseline_<cat>` (the RLP archetype's raw values)
+
+Use this to inspect *how* the engine priced a pool — e.g. "why did SS get 12%
+of the hitter budget?" or "what's the $/z for OBP after the swap-pass?".
+
+### Why this layout
+
+Earlier versions wrote a per-source `valuations.csv`, a per-source
+`hitters.json` / `pitchers.json`, and per-position `<pos>_detailed.csv` files
+in every source subdir — five copies of the same data, none of them carrying
+the Savant pct_rnk enrichments (those only land in the merged JSON because the
+ranking population is the canonical current-source rostered + RLP set). The
+per-source CSVs were bit-equal slices of `valuations[source]`; the
+per-position detailed CSVs duplicated `stats.fangraphs.*` raw stats +
+`valuations[source].z_scores` already in the merged JSON. Net effect of
+consolidation: ~175 MB of per-run output → ~42 MB, with no information loss.
+
 ## Ideation
 
 let's ideate a bit on this. the end goal is to produce a multi part blog post for this framework. while this draft is succinct enough for a code repo and helps build the intuition needed to put the proper programmatic structures in place, it doesn't explain the whys sufficiently. For example, why, really, is it that catcher who hits 20 HRs not the same as the first basement who hits 20 HR? What mathematical or philosophical (logical) principle allows us to defy a universal truth that 20 == 20. 
