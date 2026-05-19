@@ -55,6 +55,7 @@ from mtbl_valuations.io.loader import (
     load_pitchers,
 )
 from mtbl_valuations.io.qualified import compute_qualified_pa
+from mtbl_valuations.io.savant_ranks import inject_savant_pct_rnks
 from mtbl_valuations.io.synthetic import (
     load_batters_synthetic,
     load_pitchers_synthetic,
@@ -94,7 +95,12 @@ def run_trp_valuation(
     output_dir: Path,
     source: ValuationSource = "projections",
     iter_logger: IterationLogger | None = None,
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    set[str],
+    set[str],
+]:
     """
     Run the complete TRP valuation pipeline for a single valuation source.
     This is the 12-phase pipeline from the architecture document.
@@ -141,7 +147,12 @@ def _run_trp_valuation_inner(
     output_dir: Path,
     source: ValuationSource,
     iter_logger: IterationLogger | None,
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    set[str],
+    set[str],
+]:
 
     # ========================================================================
     # Phase 1: Initialize
@@ -512,7 +523,26 @@ def _run_trp_valuation_inner(
     # projection sources into a single enriched JSON.
     hitter_valuations = build_player_valuations(hitter_pools)
     pitcher_valuations = build_player_valuations(sp_pool | rp_pool)
-    return hitter_valuations, pitcher_valuations
+
+    # Rostered + RLP id sets — the "settled fantasy universe" for this
+    # source. ``run_all_valuations`` uses the current source's sets as
+    # the population for savant pct_rnk computation.
+    hitter_rostered_rlp_ids: set[str] = {
+        p.id
+        for pool in hitter_pools.values()
+        for p in pool.rostered_players + pool.replacement_players
+    }
+    pitcher_rostered_rlp_ids: set[str] = {
+        p.id
+        for pool in (sp_pool | rp_pool).values()
+        for p in pool.rostered_players + pool.replacement_players
+    }
+    return (
+        hitter_valuations,
+        pitcher_valuations,
+        hitter_rostered_rlp_ids,
+        pitcher_rostered_rlp_ids,
+    )
 
 
 # Hitter pools handled by the Phase 5 swap-pass. UTIL is included
@@ -627,6 +657,12 @@ def run_all_valuations(
     hitter_vals_by_source: dict[str, dict[str, dict[str, Any]]] = {}
     pitcher_vals_by_source: dict[str, dict[str, dict[str, Any]]] = {}
 
+    # Captured for the savant pct_rnk pass — savant data is observed
+    # (source-independent), so the population is the *current* source's
+    # rostered + RLP across all pools.
+    current_hitter_ids: set[str] = set()
+    current_pitcher_ids: set[str] = set()
+
     for source, label in SOURCE_LABELS.items():
         print(f"\n{'#' * 70}")
         print(f"# Projection source: {label}  ({source})")
@@ -634,7 +670,12 @@ def run_all_valuations(
         iter_logger: IterationLogger | None = None
         if iter_run_dir is not None and log_level_num is not None:
             iter_logger = IterationLogger(iter_run_dir, label, log_level_num)
-        hitter_valuations, pitcher_valuations = run_trp_valuation(
+        (
+            hitter_valuations,
+            pitcher_valuations,
+            hitter_ids,
+            pitcher_ids,
+        ) = run_trp_valuation(
             batters_file,
             pitchers_file,
             league_file,
@@ -645,6 +686,9 @@ def run_all_valuations(
         )
         hitter_vals_by_source[label] = hitter_valuations
         pitcher_vals_by_source[label] = pitcher_valuations
+        if source == "current":
+            current_hitter_ids = hitter_ids
+            current_pitcher_ids = pitcher_ids
         if iter_logger is not None:
             iter_logger.finalize_summary()
 
@@ -654,6 +698,22 @@ def run_all_valuations(
         batters_data = json.load(f)
     with open(pitchers_file) as f:
         pitchers_data = json.load(f)
+
+    # Inject pct_rnks into stats.savant.* nested objects using the current
+    # source's rostered+RLP universe as the ranking population. Mutates
+    # records in place so the enriched savant blocks flow through to the
+    # merged JSON below.
+    if current_hitter_ids or current_pitcher_ids:
+        h_ranked, p_ranked = inject_savant_pct_rnks(
+            batters_data,
+            pitchers_data,
+            current_hitter_ids,
+            current_pitcher_ids,
+        )
+        print(
+            f"  Savant pct_rnks: {h_ranked} hitter fields, {p_ranked} pitcher "
+            f"fields (population: current-source rostered + RLP)"
+        )
 
     write_merged_player_json(
         output_dir / "hitters.json", batters_data, hitter_vals_by_source
