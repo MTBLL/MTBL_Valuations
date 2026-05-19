@@ -42,22 +42,19 @@ if TYPE_CHECKING:
 
 class TestPipeline:
     def test_pipeline(
-        self, batters_file, pitchers_file, league_file, budget_config_file
+        self, batters_file, pitchers_file, league_file, budget_config_file, tmp_path
     ):
         """Test that the full pipeline runs without errors."""
-        output_dir = Path(".temp/")
-        output_dir.mkdir(exist_ok=True)
-
-        # Should complete without raising exceptions
+        # Single-source ``run_trp_valuation`` only writes the pool-level
+        # ``position_summary.csv``. The merged hitters/pitchers JSON +
+        # per-source CSVs were removed — see commit dropping redundant
+        # outputs (everything lives in the merged JSON written by
+        # ``run_all_valuations``).
         run_trp_valuation(
-            batters_file, pitchers_file, league_file, budget_config_file, output_dir
+            batters_file, pitchers_file, league_file, budget_config_file, tmp_path
         )
 
-        # Verify output files were created
-        assert (output_dir / "valuations.csv").exists()
-        assert (output_dir / "position_summary.csv").exists()
-        assert (output_dir / "hitters.json").exists()
-        assert (output_dir / "pitchers.json").exists()
+        assert (tmp_path / "position_summary.csv").exists()
 
     def test_run_all_valuations_with_iter_logging_writes_logs(
         self, batters_file, pitchers_file, league_file, budget_config_file, tmp_path
