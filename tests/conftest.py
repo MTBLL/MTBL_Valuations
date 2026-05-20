@@ -123,7 +123,12 @@ def budget_config_file(tmp_path_factory):
         },
         "replacement_tier_pct": 0.03,
         "min_replacement_tier_size": 3,
-        "max_iterations": 10,
+        # Match the production budget_config (repo-root budget_config.json).
+        # max_iterations=5 is intentionally low enough that pools hit the
+        # cap without natural convergence — the swap-pass + reconciliation
+        # must keep budgets balanced anyway. Higher values mask the
+        # dual-rostered / stale-primary regression.
+        "max_iterations": 5,
         "convergence_threshold": 0,
         "bench_reserve_per_team": 5,
         "pa_weights": {
