@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -574,14 +575,21 @@ def _resolve_hitter_dollar_misallocations(
         return pv.total_dollars if pv else player.valuation.total_dollars
 
     # Pre-filter to pools that exist (leagues without UTIL drop here).
-    # Tier populations get re-checked per iteration because
-    # ``_sync_primary_to_rostered_base_pool`` can drain UTIL's RLP when
-    # rebalancing dual-rostered players.
     present_positions = [
         pos for pos in _SWAP_PASS_POSITIONS if hitter_pools.get(pos) is not None
     ]
 
+    def _combined_hash() -> str:
+        """Order-independent hash of every pool's rostered composition.
+        A repeat means the swap-pass entered a limit cycle."""
+        parts = [
+            f"{pos}:{','.join(sorted(p.id for p in hitter_pools[pos].rostered_players))}"
+            for pos in present_positions
+        ]
+        return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
+
     total_swaps = 0
+    seen_hashes: set[str] = {_combined_hash()}
     for _ in range(max_passes):
         any_swap = False
         # Recompute eligibility each pass — both tiers must be populated
@@ -609,23 +617,10 @@ def _resolve_hitter_dollar_misallocations(
                 total_swaps += 1
 
         if not any_swap:
-            return total_swaps
+            break
 
-        # Sync ``primary_position`` to wherever the player is now rostered.
-        # Phase 4c stamps ``primary_position=UTIL`` on every UTIL pool
-        # member, but ``build_util_pool`` pulls candidates from base-pool
-        # RLPs without removing them, so a player can still be in their
-        # base pool. The swap-pass promotes some of those players from
-        # base-pool RLP back into base-pool rostered — at that point the
-        # stale ``UTIL`` primary causes ``distribute_pool_dollars`` to
-        # skip the top-level mirror (gated on ``primary_position == pos``)
-        # and ``recompute_pool_z_in_place`` to skip the tier / z mirrors.
-        # Base-pool rostered always wins over UTIL fallback membership.
-        _sync_primary_to_rostered_base_pool(hitter_pools)
-
-        # Refresh derived state for every swappable pool. UTIL is left as
-        # Phase 4 settled it, but it still participates in the Phase 5
-        # cross-pool allocation below since other pools' rostered changed.
+        # Refresh derived state for every swappable pool, then re-run the
+        # dollar math against the new rostered compositions.
         for pos in swap_positions:
             recompute_pool_z_in_place(
                 hitter_pools[pos],
@@ -633,8 +628,31 @@ def _resolve_hitter_dollar_misallocations(
                 budget_config,
                 league_settings,
             )
+        allocate_position_budgets(hitter_pools, league_budget, budget_config)
+        calc_pool_dollars_per_z(hitter_pools)
+        distribute_pool_dollars(hitter_pools, store_per_position=True)
 
-        # Re-run the dollar math against the new rostered compositions.
+        # Oscillation guard: borderline players (eligible in both a base
+        # pool and UTIL) make the independent per-pool swap-passes churn
+        # the same rostered/RLP pair forever — a period-2+ limit cycle
+        # that otherwise burns every remaining pass. A repeated combined
+        # composition hash means we've been here before; stop.
+        h = _combined_hash()
+        if h in seen_hashes:
+            break
+        seen_hashes.add(h)
+
+    # Finalization (only when the swap-pass actually moved players —
+    # zero swaps means the pools are unchanged from Phase 5 and already
+    # consistent). Resolve any player rostered in two pools, sync every
+    # rostered player's primary_position to their pool, then re-run the
+    # dollar math one last time so top-level valuations are consistent.
+    if total_swaps > 0:
+        _reconcile_pool_membership(hitter_pools)
+        for pos in present_positions:
+            recompute_pool_z_in_place(
+                hitter_pools[pos], hitter_pools, budget_config, league_settings
+            )
         allocate_position_budgets(hitter_pools, league_budget, budget_config)
         calc_pool_dollars_per_z(hitter_pools)
         distribute_pool_dollars(hitter_pools, store_per_position=True)
@@ -642,50 +660,82 @@ def _resolve_hitter_dollar_misallocations(
     return total_swaps
 
 
-def _sync_primary_to_rostered_base_pool(
+def _reconcile_pool_membership(
     hitter_pools: dict[str, PositionPool],
 ) -> None:
-    """Reassign ``primary_position`` for any player still tagged
-    ``UTIL`` who is now rostered in a base position pool, and rebalance
-    the UTIL pool when a dual-rostered player gets removed.
+    """Ensure every player is rostered in exactly one pool, then sync
+    ``primary_position`` to that pool.
 
-    Pure DHs and players legitimately rostered in UTIL keep
-    ``primary_position=UTIL``. Only players the swap-pass promoted out
-    of UTIL fallback territory back into a base pool's rostered tier
-    get retagged.
+    ``build_util_pool`` pulls base-pool RLP / below-replacement players
+    into UTIL as candidates *without removing them from their base
+    pool*. The independent per-pool swap-passes can then roster the
+    same player in BOTH their base pool and UTIL. Each player occupies
+    one real roster slot, so a dual-rostered player is resolved by
+    keeping the pool that values them higher (per-position dollars) and
+    demoting them to RLP in the other; that pool's best RLP is promoted
+    to keep its rostered count whole. A promoted RLP can itself be
+    dual-rostered, so the scan repeats until stable.
 
-    When a player is found rostered in BOTH a base pool and UTIL (a
-    leftover from ``build_util_pool`` not removing players from their
-    base pool when pulling them as UTIL candidates), the player is
-    removed from UTIL's rostered tier and UTIL's next-best RLP is
-    promoted in to keep the UTIL slot count whole. Without this, the
-    UTIL budget would be double-counted against players whose real
-    roster slot lives in the base pool.
+    Even players rostered in just one pool can carry a stale
+    ``primary_position`` (Phase 4c stamps ``UTIL`` on every UTIL pool
+    member; the swap-pass then moves some of them). The final loop
+    re-derives ``primary_position`` from actual rostered membership so
+    ``distribute_pool_dollars`` mirrors top-level dollars correctly.
     """
-    base_pools = ("C", "1B", "2B", "3B", "SS", "OF")
-    util_pool = hitter_pools.get("UTIL")
 
-    def _util_dollars(player: Player) -> float:
-        pv = player.valuation.valuations_by_position.get("UTIL")
-        return pv.total_dollars if pv else player.valuation.total_dollars
+    def per_pos_dollars(player: Player, pos: str) -> float:
+        pv = player.valuation.valuations_by_position.get(pos)
+        return pv.total_dollars if pv else 0.0
 
-    for pos in base_pools:
-        pool = hitter_pools.get(pos)
-        if pool is None:
-            continue
+    # Resolve dual-rostered players one at a time, re-snapshotting
+    # membership each pass. Resolving a duplicate can promote an RLP
+    # that is itself dual-rostered, so a fresh snapshot keeps the
+    # ``.remove`` calls safe (the player is always still present).
+    # Bounded: each pass resolves exactly one duplicate, player set
+    # is finite.
+    for _ in range(500):
+        membership: dict[str, list[str]] = {}
+        players: dict[str, Player] = {}
+        for pos, pool in hitter_pools.items():
+            for p in pool.rostered_players:
+                membership.setdefault(p.id, []).append(pos)
+                players[p.id] = p
+
+        duplicate = next(
+            (
+                (pid, poss)
+                for pid, poss in membership.items()
+                if len(poss) > 1
+            ),
+            None,
+        )
+        if duplicate is None:
+            break
+
+        pid, poss = duplicate
+        p = players[pid]
+        keep = max(poss, key=lambda pos: per_pos_dollars(p, pos))
+        for pos in poss:
+            if pos == keep:
+                continue
+            pool = hitter_pools[pos]
+            pool.rostered_players.remove(p)
+            pool.replacement_players.append(p)
+            # Promote that pool's best RLP to keep the rostered count.
+            rlp_candidates = [
+                q for q in pool.replacement_players if q.id != pid
+            ]
+            if rlp_candidates:
+                best = max(
+                    rlp_candidates, key=lambda q: per_pos_dollars(q, pos)
+                )
+                pool.replacement_players.remove(best)
+                pool.rostered_players.append(best)
+
+    # Sync primary_position to the (now unique) rostered pool.
+    for pos, pool in hitter_pools.items():
         for p in pool.rostered_players:
-            if p.valuation.primary_position != "UTIL":
-                continue
             p.valuation.primary_position = pos
-            # Drop dual-rostered membership from UTIL and refill the slot
-            # from UTIL's RLP so the pool's roster count stays consistent.
-            if util_pool is None or p not in util_pool.rostered_players:
-                continue
-            util_pool.rostered_players.remove(p)
-            if util_pool.replacement_players:
-                best_rlp = max(util_pool.replacement_players, key=_util_dollars)
-                util_pool.replacement_players.remove(best_rlp)
-                util_pool.rostered_players.append(best_rlp)
 
 
 def run_all_valuations(

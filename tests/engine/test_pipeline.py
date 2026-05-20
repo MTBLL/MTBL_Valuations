@@ -113,6 +113,35 @@ class TestPipeline:
         for rec in valued:
             assert set(rec["valuations"]).issubset(set(sources))
 
+    def test_budget_balances_for_every_source(
+        self, batters_file, pitchers_file, league_file, budget_config_file,
+        league_budget, tmp_path
+    ):
+        """Every valuation source's rostered-player dollars must sum to the
+        league budget. Regression for the dual-rostered / stale-primary
+        bug: a borderline player (e.g. an OF/UTIL-eligible hitter the
+        swap-pass churns) used to end up rostered in one pool with a
+        ``primary_position`` pointing at another, so ``total_dollars``
+        mirrored the wrong pool and the per-source totals drifted
+        $4–32 short of budget."""
+        run_all_valuations(
+            batters_file, pitchers_file, league_file, budget_config_file, tmp_path
+        )
+        league_total = league_budget.total
+
+        hitters = json.loads((tmp_path / "hitters.json").read_text())
+        pitchers = json.loads((tmp_path / "pitchers.json").read_text())
+        sources = ("preseason", "updated", "ros", "synthetic", "current")
+        for src in sources:
+            allocated = 0.0
+            for rec in hitters + pitchers:
+                v = rec.get("valuations", {}).get(src)
+                if v and v.get("tier") == "ROSTERED":
+                    allocated += v.get("total_dollars", 0.0)
+            assert allocated == pytest.approx(league_total, abs=1.0), (
+                f"{src}: rostered $ {allocated:.2f} != budget {league_total}"
+            )
+
 
 class TestSwapPassUnit:
     """Direct unit tests on ``_resolve_hitter_dollar_misallocations``."""
@@ -177,21 +206,92 @@ class TestSwapPassUnit:
         assert pool.rostered_players == [rost]
         assert pool.replacement_players == [rlp]
 
-    def test_sync_primary_skips_missing_pool(self):
-        """``_sync_primary_to_rostered_base_pool`` must tolerate leagues
-        whose hitter_pools dict is missing one of the configured base
-        positions (e.g. a league with no catcher slot)."""
-        from mtbl_valuations.domain.models import PositionPool
-        from mtbl_valuations.engine.pipeline import (
-            _sync_primary_to_rostered_base_pool,
+    def test_reconcile_resolves_dual_rostered_player(self):
+        """A player rostered in both a base pool and UTIL is kept in the
+        higher-paying pool; the other pool demotes them to RLP and
+        promotes its best RLP to keep the rostered count whole."""
+        from mtbl_valuations.domain.models import (
+            HitterStats,
+            Player,
+            PositionPool,
+            PositionValuation,
+            Valuation,
         )
+        from mtbl_valuations.engine.pipeline import _reconcile_pool_membership
 
-        # Only 1B is present — every other base position lookup returns
-        # None and the inner continue branch must fire.
+        def _mk(pid: str, of_dollars: float, util_dollars: float) -> Player:
+            v = Valuation()
+            v.primary_position = "OF"
+            v.valuations_by_position = {
+                "OF": PositionValuation(
+                    position="OF", normalized_z={}, total_z=0.0,
+                    total_dollars=of_dollars, tier="ROSTERED", position_rank=1,
+                ),
+                "UTIL": PositionValuation(
+                    position="UTIL", normalized_z={}, total_z=0.0,
+                    total_dollars=util_dollars, tier="ROSTERED", position_rank=1,
+                ),
+            }
+            return Player(
+                id=pid, name=pid, team="T", positions=["OF"], role="HITTER",
+                stats=HitterStats(pa=600, ab=540, r=80, hr=20, rbi=70,
+                                  sbn=10, obp=0.350, slg=0.450),
+                valuation=v,
+            )
+
+        # ``dual`` is rostered in both OF and UTIL; UTIL pays more, so it
+        # should be kept there and dropped from OF.
+        dual = _mk("dual", of_dollars=9.0, util_dollars=18.0)
+        of_filler = _mk("of_filler", of_dollars=12.0, util_dollars=1.0)
+        of_rlp = _mk("of_rlp", of_dollars=8.0, util_dollars=1.0)
+        util_filler = _mk("util_filler", of_dollars=1.0, util_dollars=10.0)
+
+        of_pool = PositionPool(position="OF", role="HITTER", roster_slots=1)
+        of_pool.rostered_players = [dual, of_filler]
+        of_pool.replacement_players = [of_rlp]
+
+        util_pool = PositionPool(position="UTIL", role="HITTER", roster_slots=1)
+        util_pool.rostered_players = [dual, util_filler]
+        util_pool.replacement_players = []
+
+        _reconcile_pool_membership({"OF": of_pool, "UTIL": util_pool})
+
+        # dual kept in UTIL (paid more there), removed from OF rostered.
+        assert dual in util_pool.rostered_players
+        assert dual not in of_pool.rostered_players
+        # OF backfilled from its RLP so the rostered count is unchanged.
+        assert len(of_pool.rostered_players) == 2
+        assert of_rlp in of_pool.rostered_players
+        # primary_position re-derived from actual rostered membership.
+        assert dual.valuation.primary_position == "UTIL"
+        assert of_filler.valuation.primary_position == "OF"
+
+    def test_reconcile_tolerates_missing_and_single_pool(self):
+        """``_reconcile_pool_membership`` is a no-op when no player is
+        dual-rostered — it just syncs primary_position."""
+        from mtbl_valuations.domain.models import (
+            HitterStats,
+            Player,
+            PositionPool,
+            Valuation,
+        )
+        from mtbl_valuations.engine.pipeline import _reconcile_pool_membership
+
+        v = Valuation()
+        v.primary_position = "UTIL"  # stale — player is really a 1B
+        player = Player(
+            id="x", name="x", team="T", positions=["1B"], role="HITTER",
+            stats=HitterStats(pa=600, ab=540, r=80, hr=20, rbi=70,
+                              sbn=10, obp=0.350, slg=0.450),
+            valuation=v,
+        )
         pool_1b = PositionPool(position="1B", role="HITTER", roster_slots=1)
-        # Empty pool to make the function a no-op past the missing-pool
-        # guards; we're testing the guard itself, not any sync work.
-        _sync_primary_to_rostered_base_pool({"1B": pool_1b})
+        pool_1b.rostered_players = [player]
+
+        _reconcile_pool_membership({"1B": pool_1b})
+
+        # Stale UTIL primary corrected to the actual rostered pool.
+        assert player.valuation.primary_position == "1B"
 
 
 class TestPipelinePhase3RegularHitters:
