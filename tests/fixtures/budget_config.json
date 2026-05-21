@@ -23,8 +23,12 @@
     "K/9": 0.40,
     "SVHD": 0.20
   },
-  "replacement_tier_pct": 0.03,
+  "replacement_tier_pct": 0.5,
   "min_replacement_tier_size": 3,
+  "rlp_archetype": {
+    "trim_top_pct": 0.0,
+    "sbn_global_mu": 1.0
+  },
   "max_iterations": 5,
   "convergence_threshold": 0,
   "bench_reserve_per_team": 5,

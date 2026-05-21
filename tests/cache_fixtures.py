@@ -35,7 +35,9 @@ CACHE_DIR = Path(__file__).parent / ".cache" / "phases"
 # Version history:
 #   1: Initial implementation
 #   2: Removed Phase 4d (UTIL removal), changed baseline shift logic, fixed exports
-CACHE_VERSION = 2
+#   3: Replacement archetype baseline (replaces per-cat phantom min),
+#      signed z + conditional shift, SBN global-mu; tests on live data
+CACHE_VERSION = 3
 
 
 def _cache_key(*inputs: Any) -> str:

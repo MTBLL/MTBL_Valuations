@@ -16,6 +16,7 @@ from mtbl_valuations.domain.models import (
     PitcherPlayer,
     Player,
 )
+from mtbl_valuations.config import TRANSFORM_OUTPUT_DIR
 from mtbl_valuations.engine.budget import calc_league_budget
 from mtbl_valuations.engine.pipeline import run_trp_valuation
 from mtbl_valuations.io.loader import (
@@ -76,21 +77,22 @@ def league_summary(league_file):
 
 
 @pytest.fixture(scope="session")
-def batters_file(fixtures_dir):
-    """Return path to batters fixture file."""
-    return fixtures_dir / "batters_matched.json"
+def batters_file():
+    """Path to the live transform batters file — real-scale data, so the
+    tests exercise the same pool sizes the production pipeline sees."""
+    return TRANSFORM_OUTPUT_DIR / "batters_matched.json"
 
 
 @pytest.fixture(scope="session")
-def pitchers_file(fixtures_dir):
-    """Return path to pitchers fixture file."""
-    return fixtures_dir / "pitchers_matched.json"
+def pitchers_file():
+    """Path to the live transform pitchers file (real-scale data)."""
+    return TRANSFORM_OUTPUT_DIR / "pitchers_matched.json"
 
 
 @pytest.fixture(scope="session")
-def league_file(fixtures_dir):
-    """Return path to league summary fixture file."""
-    return fixtures_dir / "league_10998_summary.json"
+def league_file():
+    """Path to the live transform league summary (real-scale data)."""
+    return TRANSFORM_OUTPUT_DIR / "league_10998_summary.json"
 
 
 @pytest.fixture(scope="session")
@@ -121,8 +123,9 @@ def budget_config_file(tmp_path_factory):
             "K/9": 0.40,
             "SVHD": 0.20,
         },
-        "replacement_tier_pct": 0.03,
+        "replacement_tier_pct": 0.5,
         "min_replacement_tier_size": 3,
+        "rlp_archetype": {"trim_top_pct": 0.0, "sbn_global_mu": 1.0},
         # Match the production budget_config (repo-root budget_config.json).
         # max_iterations=5 is intentionally low enough that pools hit the
         # cap without natural convergence — the swap-pass + reconciliation

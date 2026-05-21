@@ -173,9 +173,14 @@ def calc_pool_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, Positio
             pool_cat_total_z = sum(category_z_scores)
             pool.total_pool_z[category] = pool_cat_total_z
 
-            assert pool_cat_total_z > 0, (
-                f"Total Z-score for {category} in {pool.position} is zero"
-            )
+            # Signed z (no clamp): a pool's Σz can be <= 0 when its
+            # rostered tier sits at/below the replacement archetype in a
+            # category — or for a 0-budget category (e.g. RP IP, weight 0).
+            # $/Z = 0 there: it contributes no dollars. A non-trivial
+            # budget landing here would surface as a budget-balance miss.
+            if pool_cat_total_z <= 0:
+                pool.dollars_per_z[category] = 0.0
+                continue
             pool.dollars_per_z[category] = (
                 pool.category_budgets[category] / pool_cat_total_z
             )

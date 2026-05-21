@@ -332,6 +332,17 @@ def _run_trp_valuation_inner(
     print("\nPhase 5: Allocating hitter budgets...")
 
     hitter_pools = allocate_position_budgets(hitter_pools, league_budget, budget_config)
+
+    # Re-settle every pool's z against its FINAL tier composition. The
+    # per-position iteration leaves z one tier-reassignment stale for pools
+    # that hit max-iter without converging (e.g. UTIL); recompute settles
+    # archetype + signed z against the current tier so the budget split
+    # sees a consistent Σz.
+    for pool in hitter_pools.values():
+        recompute_pool_z_in_place(
+            pool, hitter_pools, budget_config, league_settings
+        )
+
     hitter_pools = calc_pool_dollars_per_z(hitter_pools)
     distribute_pool_dollars(hitter_pools, store_per_position=True)
 
@@ -450,6 +461,12 @@ def _run_trp_valuation_inner(
             )
         }
     )
+    # Re-settle z against final tiers (same reason as the hitter pools).
+    for pool in sp_pool.values():
+        recompute_pool_z_in_place(pool, sp_pool, budget_config, league_settings)
+    for pool in rp_pool.values():
+        recompute_pool_z_in_place(pool, rp_pool, budget_config, league_settings)
+
     sp_pool.update(calc_pool_dollars_per_z(sp_pool))
     rp_pool.update(calc_pool_dollars_per_z(rp_pool))
 
