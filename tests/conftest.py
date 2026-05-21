@@ -124,7 +124,7 @@ def budget_config_file(tmp_path_factory):
         },
         "replacement_tier_pct": 0.5,
         "min_replacement_tier_size": 3,
-        "rlp_archetype": {"trim_top_pct": 0.0, "sbn_global_mu": 1.0},
+        "rlp_archetype": {"trim_top_pct": 0.0, "sbn_global_mu": 1.0, "thin_cell_k": 1.0},
         # Match the production budget_config (repo-root budget_config.json).
         # max_iterations=5 is intentionally low enough that pools hit the
         # cap without natural convergence — the swap-pass + reconciliation

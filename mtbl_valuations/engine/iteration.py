@@ -842,11 +842,54 @@ def _observe_iter(
         recent.pop(0)
 
 
+def _compute_thin_cell_floor(
+    pools: dict[str, PositionPool],
+    budget_config: dict[str, Any],
+    league_settings: dict[str, Any],
+) -> float | None:
+    """League-derived per-player-z floor for the thin-cell shift.
+
+    For every pool x category, take the rostered tier's per-player settled
+    z (``Σ normalized_z / roster count`` — the same z ``calc_pool_dollars
+    _per_z`` divides the budget by). The floor is ``mean - k * stdev`` of
+    those values across the whole pool set. A cell whose per-player z
+    falls more than ``k`` sigma below the league norm is "thin" — its
+    ``budget / Σz`` would blow up — and gets re-baselined.
+
+    ``k`` is ``budget_config["rlp_archetype"]["thin_cell_k"]`` (default 1).
+    Returns ``None`` when there aren't enough cells to form a distribution.
+    """
+    cfg = budget_config.get("rlp_archetype") or {}
+    k = float(cfg.get("thin_cell_k", 1.0))
+
+    per_player: list[float] = []
+    for pool in pools.values():
+        pos = pool.position
+        rostered = pool.rostered_players
+        if not rostered:
+            continue
+        for c in get_categories(pool.role, league_settings):
+            zs: list[float] = []
+            for p in rostered:
+                pv = p.valuation.valuations_by_position.get(pos)
+                if pv is not None and pv.normalized_z:
+                    zs.append(pv.normalized_z.get(c, 0.0))
+                else:
+                    zs.append(p.valuation.normalized_z.get(c, 0.0))
+            if zs:
+                per_player.append(sum(zs) / len(zs))
+
+    if len(per_player) < 2:
+        return None
+    return statistics.mean(per_player) - k * statistics.pstdev(per_player)
+
+
 def recompute_pool_z_in_place(
     pool: PositionPool,
     pools: dict[str, PositionPool],
     budget_config: dict[str, Any],
     league_settings: dict[str, Any],
+    pp_z_floor: float | None = None,
 ) -> None:
     """Refresh a pool's derived state — rostered-tier stdev, replacement
     raw mean, per-cat baseline shift, per-player settled z, total_pool_z,
@@ -858,6 +901,11 @@ def recompute_pool_z_in_place(
 
     Per-position only: the swap-pass is hitter-pool-specific, where every
     player has a ``primary_position`` set and per-position valuations exist.
+
+    ``pp_z_floor``: when given, a category is also shifted if its rostered
+    per-player raw z falls below this league-derived floor (see
+    ``_compute_thin_cell_floor``) — not just when Σ raw z <= 0. This tames
+    thin cells whose ``budget / Σz`` would otherwise explode.
     """
     categories = get_categories(pool.role, league_settings)
     pos = pool.position
@@ -883,13 +931,19 @@ def recompute_pool_z_in_place(
             zd[c] = (delta / sd) if sd else 0.0
         raw_z[p.id] = zd
     # Conditional baseline shift — archetype IS the baseline; fall back to
-    # the worst-rostered baseline only where the rostered tier is below it.
+    # the worst-rostered baseline where the rostered tier is below it
+    # (Σ raw z <= 0) OR where the cell is thin: per-player raw z below the
+    # league floor, so budget / Σz would otherwise explode.
     pool.z_baseline_shift = {}
     for c in categories:
         rost_raw = [raw_z[p.id][c] for p in pool.rostered_players if p.id in raw_z]
         sigma = sum(rost_raw)
+        n = len(rost_raw)
         min_z = min(rost_raw) if rost_raw else 0.0
-        pool.z_baseline_shift[c] = max(0.0, -min_z) if sigma <= 0 else 0.0
+        thin = sigma <= 0 or (
+            pp_z_floor is not None and n > 0 and sigma / n < pp_z_floor
+        )
+        pool.z_baseline_shift[c] = max(0.0, -min_z) if thin else 0.0
 
     for p in all_pool_players:
         settled = {
