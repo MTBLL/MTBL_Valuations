@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
+import math
 import os
 
 from ..domain.models import Player, PositionPool, Role
 from .valuation import get_composite_metric
+
+
+def _replacement_tier_size(
+    roster_slots: int, rlp_tier_pct: float, min_rlp_tier_size: int
+) -> int:
+    """Replacement-tier player count = a fraction of the pool's rostered
+    slots, rounded up, floored at ``min_rlp_tier_size``.
+
+    ``rlp_tier_pct`` is a share of ROSTER SLOTS (not pool size): at 0.5 an
+    11-slot pool gets ``ceil(5.5) = 6`` RLPs, a 33-slot pool gets 17. A
+    wide, fixed-count tier keeps the replacement baseline (``rlp_raw_avg``)
+    stable across iterations — the old 3%-of-z threshold always collapsed
+    to ``min_rlp_tier_size``, leaving the baseline a noisy 3-player mean.
+    """
+    return max(min_rlp_tier_size, math.ceil(roster_slots * rlp_tier_pct))
 
 
 def _calc_replacement_threshold(
@@ -226,37 +242,25 @@ def _build_replacement_tier(
     rlp_tier_pct: float,
     min_rlp_tier_size: int,
 ) -> PositionPool:
-    pool = pool
-    last_rostered_metric = get_composite_metric(pool.rostered_players[-1])
-    threshold = _calc_replacement_threshold(last_rostered_metric, rlp_tier_pct)
-
-    replacement_candidates = [
-        p
-        for p in position_players[pool.roster_slots :]
-        if get_composite_metric(p) >= threshold
+    """Slot the post-rostered players into a fixed-count replacement tier
+    (``ceil(roster_slots * rlp_tier_pct)``, see ``_replacement_tier_size``)
+    and push the rest to ``below_replacement``. ``position_players`` is
+    already sorted best-first by the caller."""
+    size = _replacement_tier_size(
+        pool.roster_slots, rlp_tier_pct, min_rlp_tier_size
+    )
+    pool.replacement_players = position_players[
+        pool.roster_slots : pool.roster_slots + size
+    ]
+    pool.below_replacement = position_players[
+        pool.roster_slots + len(pool.replacement_players) :
     ]
 
-    remaining = len(position_players) - pool.roster_slots
-    if remaining <= 0:
+    if not pool.replacement_players:
         _debug(
             f"[build_replacement_tier] {pool.position}: no remaining players "
             f"(eligible={len(position_players)} roster_slots={pool.roster_slots})"
         )
-
-    # Enforce minimum tier size
-    if len(replacement_candidates) < min_rlp_tier_size:
-        replacement_candidates = position_players[
-            pool.roster_slots : pool.roster_slots + min_rlp_tier_size
-        ]
-        _debug(
-            f"[build_replacement_tier] {pool.position}: enforcing min_size={min_rlp_tier_size} "
-            f"replacement={len(replacement_candidates)} remaining={remaining}"
-        )
-
-    pool.replacement_players = replacement_candidates
-    pool.below_replacement = position_players[
-        pool.roster_slots + len(pool.replacement_players) :
-    ]
 
     return pool
 
@@ -268,46 +272,30 @@ def rebuild_replacement_tier_on_z(
     min_rlp_tier_size: int,
     use_per_pool_z: bool = False,
 ) -> list[Player]:
-    """Rebuild replacement tier after re-ranking by total Z.
+    """Rebuild the replacement tier after re-ranking.
+
+    The tier is a fixed count — ``ceil(roster_slots * rlp_tier_pct)``,
+    floored at ``min_rlp_tier_size`` (see ``_replacement_tier_size``) —
+    taken straight off the top of the post-rostered players.
 
     Args:
-        all_pool_players: All players in this pool, sorted by total_z descending.
+        all_pool_players: All players in this pool, already sorted
+            best-first by the caller (every caller does).
         pool: The position pool being rebuilt.
-        rlp_tier_pct: Percentage of players to include in replacement tier.
-        min_rlp_tier_size: Minimum number of players to include in replacement tier.
-        use_per_pool_z: If True, get total_z from player's valuations_by_position dict
-            for this pool's position. Use when players appear in multiple pools.
+        rlp_tier_pct: Replacement-tier size as a share of roster slots.
+        min_rlp_tier_size: Floor on the replacement-tier player count.
+        use_per_pool_z: Retained for call-site compatibility. Selection is
+            now positional on the caller's sort order, so this no longer
+            affects which players are picked.
     """
     if not pool.rostered_players:
         return []
 
-    # Get players after rostered tier
+    size = _replacement_tier_size(
+        pool.roster_slots, rlp_tier_pct, min_rlp_tier_size
+    )
     remaining = all_pool_players[pool.roster_slots :]
-
-    def _get_total_z_for_player(p: Player) -> float:
-        if use_per_pool_z:
-            return p.valuation.valuations_by_position[pool.position].total_z
-        return p.valuation.total_z
-
-    # Use total_z instead of composite metric for threshold
-    last_rostered_z = _get_total_z_for_player(pool.rostered_players[-1])
-    # TODO: perhaps we need create arg for threshold size, or store it in the pool object.
-    # a 3% distance from a total z-score typically betwen 0-3 units will never produce a meaningful range
-    # it makes sense to have the same RLP size for each iteration. current logic will always enforce the min size
-    threshold = last_rostered_z * (1 - rlp_tier_pct)
-
-    replacement_candidates = [
-        p for p in remaining if _get_total_z_for_player(p) >= threshold
-    ]
-
-    # Enforce minimum tier size
-    if (
-        len(replacement_candidates) < min_rlp_tier_size
-        and len(remaining) >= min_rlp_tier_size
-    ):
-        replacement_candidates = remaining[:min_rlp_tier_size]
-
-    return replacement_candidates
+    return remaining[:size]
 
 
 def rebuild_pools_after_assignment(
