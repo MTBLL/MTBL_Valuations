@@ -163,63 +163,35 @@ def _rostered_category_z(pool: PositionPool, category: str) -> float:
 
 
 def calc_pool_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, PositionPool]:
-    """
-    Calculate the $/Z conversion rate for each position-category.
+    """Calculate the $/Z conversion rate for each position-category.
 
     Path B (settled-z) contract: each pool's per-cat z-scores already live
     on the player, written by the iteration loop.
 
-    Signed z (no clamp) means a category's rostered Σz can land <= 0 — the
-    rostered tier produces nothing above the replacement archetype there.
-    A non-positive Σz cannot absorb a budget. Rather than drop that budget
-    (money would vanish from the pool) or hard-fail, its dollars are
-    REALLOCATED to the pool's live categories (Σz > 0), proportional to
-    their budgets. The pool's total budget is conserved; the dead category
-    simply settles to $/Z = 0. Only a pool with NO live category at all
-    (every category <= 0) is unrecoverable and raises.
+    The conditional baseline shift (``iteration.py`` Step 3b) guarantees a
+    POSITIVE rostered Σz for every category: wherever the replacement
+    archetype would leave ``Σ(raw z) <= 0`` it re-baselines that category
+    to the worst rostered player. So ``$/Z = budget / Σz`` is always
+    well-defined. The guard below is a tripwire — a non-positive Σz means
+    that upstream invariant has broken; fail loud rather than mis-allocate.
     """
     for pool in pools.values():
         pool.dollars_per_z = {}
         pool.total_pool_z = {}
-        categories = list(pool.category_budgets.keys())
 
-        # Pass 1: settled-z sum per category.
-        for category in categories:
-            pool.total_pool_z[category] = _rostered_category_z(pool, category)
+        for category in pool.category_budgets.keys():
+            pool_cat_total_z = _rostered_category_z(pool, category)
+            pool.total_pool_z[category] = pool_cat_total_z
 
-        # Pass 2: reallocate the budget of any non-positive-Σz category to
-        # the pool's live categories so no money vanishes from the pool.
-        live = [c for c in categories if pool.total_pool_z[c] > 0]
-        dead = [c for c in categories if pool.total_pool_z[c] <= 0]
-        orphan = sum(pool.category_budgets.get(c, 0.0) for c in dead)
-        if orphan > 1e-9:
-            if not live:
+            if pool_cat_total_z <= 0:
                 raise ValueError(
-                    f"calc_pool_dollars_per_z: {pool.position} has a "
-                    f"positive budget (${orphan:.2f}) but every category's "
-                    f"rostered Σz is <= 0 — no live category to absorb it. "
-                    f"The pool's budget cannot be distributed."
+                    f"calc_pool_dollars_per_z: {category} in "
+                    f"{pool.position} has rostered Σz={pool_cat_total_z:.4f} "
+                    f"<= 0. The conditional baseline shift should guarantee "
+                    f"Σz > 0 — an upstream invariant has broken."
                 )
-            live_budget_total = sum(pool.category_budgets[c] for c in live)
-            for c in live:
-                share = (
-                    pool.category_budgets[c] / live_budget_total
-                    if live_budget_total > 0
-                    else 1.0 / len(live)
-                )
-                pool.category_budgets[c] += orphan * share
-            for c in dead:
-                pool.category_budgets[c] = 0.0
-
-        # Pass 3: $/Z. Dead categories carry no production -> $/Z = 0
-        # (their budget was moved to the live categories in Pass 2).
-        for category in categories:
-            total_z = pool.total_pool_z[category]
-            if total_z <= 0:
-                pool.dollars_per_z[category] = 0.0
-                continue
             pool.dollars_per_z[category] = (
-                pool.category_budgets[category] / total_z
+                pool.category_budgets[category] / pool_cat_total_z
             )
 
     return pools
