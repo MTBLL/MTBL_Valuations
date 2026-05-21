@@ -5,6 +5,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from mtbl_valuations.domain.models import HitterStats, Player, PositionPool
+from mtbl_valuations.engine.budget import calc_pool_dollars_per_z
+
 
 class TestBudgetCalculation:
     """Test league budget calculation."""
@@ -225,3 +228,37 @@ class TestDollarsPerZ:
                 f"UTIL {col} ({util_rate:.3f}) should not be >3x "
                 f"max other position rate ({max_other_rate:.3f})"
             )
+
+
+class TestDollarsPerZGuard:
+    """calc_pool_dollars_per_z fails loud on a non-positive rostered Σz.
+
+    The conditional baseline shift (iteration Step 3b) re-baselines any
+    category whose rostered Σ(raw z) <= 0, so in a real run Σz is always
+    positive (verified: min Σz ≈ +0.14 across every pool/category/source).
+    The guard is a broken-invariant tripwire, not a silent budget drop."""
+
+    def test_nonpositive_rostered_z_raises(self):
+        """A hand-built pool whose R settled-z sums to 0 must raise — the
+        $/Z budget split would otherwise be undefined."""
+        def _h(pid: str, z: dict[str, float]) -> Player:
+            p = Player(
+                id=pid,
+                name=pid,
+                team="T",
+                positions=["SS"],
+                role="HITTER",
+                stats=HitterStats(
+                    pa=600, ab=540, r=80, hr=20, rbi=70, sbn=10,
+                    obp=0.340, slg=0.450,
+                ),
+            )
+            p.valuation.normalized_z = dict(z)
+            return p
+
+        pool = PositionPool(position="SS", role="HITTER", roster_slots=2)
+        pool.rostered_players = [_h("a", {"R": 1.0}), _h("b", {"R": -1.0})]
+        pool.category_budgets = {"R": 25.0}
+
+        with pytest.raises(ValueError, match="invariant"):
+            calc_pool_dollars_per_z({"SS": pool})

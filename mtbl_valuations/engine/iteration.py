@@ -13,6 +13,7 @@ from mtbl_valuations.engine.pools import rebuild_replacement_tier_on_z
 from mtbl_valuations.engine.valuation import (
     get_categories,
     get_player_stat,
+    is_inverted,
 )
 
 
@@ -64,15 +65,13 @@ def iterate_to_convergence_global(
                 vals = [get_player_stat(p, cat) for p in rostered]
                 pool.rostered_tier_stdevs[cat] = _safe_stdev(vals)
 
-            # Step 2: replacement-tier RAW mean (baseline)
-            # composite_rlp_archetype must be a dict[str, float] of raw means per category
+            # Step 2: replacement archetype baseline (trimmed RLP mean)
             if composite_rlp_archetype is not None:
                 pool.rlp_raw_avg = composite_rlp_archetype
             else:
-                pool.rlp_raw_avg = {
-                    cat: _safe_mean(get_player_stat(p, cat) for p in rlp_tier)
-                    for cat in categories
-                }
+                pool.rlp_raw_avg = _compute_rlp_archetype(
+                    rlp_tier, categories, budget_config
+                )
 
             # Step 3a: compute RAW above-replacement z per player (in-memory)
             raw_z: dict[str, dict[str, float]] = {}
@@ -93,9 +92,13 @@ def iterate_to_convergence_global(
                     z_by_cat[cat] = z_score
                 raw_z[player.id] = z_by_cat
 
-            # Step 3b: per-cat z_baseline_shift = -min(raw z) over CURRENT
-            # rostered tier. The shift lets every rostered player's per-cat
-            # contribution land at >=0 so dollars are non-negative.
+            # Step 3b: CONDITIONAL baseline shift. The archetype (rlp_avg)
+            # is the baseline; for the few categories where the rostered
+            # tier sits BELOW it (Σ raw z ≤ 0 — a position genuinely below
+            # replacement, e.g. 1B SBN), fall back to the worst-rostered
+            # baseline so Σz stays positive and the budget can distribute.
+            # Normal categories keep shift 0 → a replacement-archetype
+            # player settles to ~0 → ~$0.
             pool.z_baseline_shift = {}
             for cat in categories:
                 rost_raw = [
@@ -103,16 +106,18 @@ def iterate_to_convergence_global(
                     for p in pool.rostered_players
                     if p.id in raw_z
                 ]
+                sigma = sum(rost_raw)
                 min_z = min(rost_raw) if rost_raw else 0.0
-                pool.z_baseline_shift[cat] = max(0.0, -min_z)
+                pool.z_baseline_shift[cat] = max(0.0, -min_z) if sigma <= 0 else 0.0
 
-            # Step 3c: store SETTLED z. total_z is the *sum* of settled
-            # per-cat z's — the intuitive "production above replacement"
-            # number that shows up in logs / JSON / CSVs.
+            # Step 3c: store SETTLED z = signed raw z + conditional shift.
+            # No clamp — below-archetype production stays negative so RLP
+            # value collapses toward 0. RLP players genuinely above a
+            # rostered player in a category keep that informational value.
             for player in all_pool_players:
                 rz = raw_z[player.id]
                 settled: dict[str, float] = {
-                    cat: max(0.0, rz[cat] + pool.z_baseline_shift[cat])
+                    cat: rz[cat] + pool.z_baseline_shift[cat]
                     for cat in categories
                 }
                 player.valuation.normalized_z = settled
@@ -258,15 +263,13 @@ def iterate_to_convergence_per_position(
                 vals = [get_player_stat(p, cat) for p in rostered]
                 pool.rostered_tier_stdevs[cat] = _safe_stdev(vals)
 
-            # Step 2: replacement-tier RAW mean (baseline)
-            # composite_rlp_archetype must be a dict[str, float] of raw means per category
+            # Step 2: replacement archetype baseline (trimmed RLP mean)
             if composite_rlp_archetype is not None:
                 pool.rlp_raw_avg = composite_rlp_archetype
             else:
-                pool.rlp_raw_avg = {
-                    cat: _safe_mean(get_player_stat(p, cat) for p in rlp_tier)
-                    for cat in categories
-                }
+                pool.rlp_raw_avg = _compute_rlp_archetype(
+                    rlp_tier, categories, budget_config
+                )
 
             # Step 3a: compute RAW above-replacement z per player (in-memory)
             raw_z: dict[str, dict[str, float]] = {}
@@ -287,7 +290,9 @@ def iterate_to_convergence_per_position(
                     z_by_cat[cat] = z_score
                 raw_z[player.id] = z_by_cat
 
-            # Step 3b: per-cat z_baseline_shift from current rostered raw z.
+            # Step 3b: CONDITIONAL baseline shift — see the single-position
+            # path. Shift 0 normally; falls back to the worst-rostered
+            # baseline only where the rostered tier is below the archetype.
             pool.z_baseline_shift = {}
             for cat in categories:
                 rost_raw = [
@@ -295,15 +300,15 @@ def iterate_to_convergence_per_position(
                     for p in pool.rostered_players
                     if p.id in raw_z
                 ]
+                sigma = sum(rost_raw)
                 min_z = min(rost_raw) if rost_raw else 0.0
-                pool.z_baseline_shift[cat] = max(0.0, -min_z)
+                pool.z_baseline_shift[cat] = max(0.0, -min_z) if sigma <= 0 else 0.0
 
-            # Step 3c: store SETTLED z. total_z is the *sum* of settled
-            # per-cat z's (intuitive). Rank uses a separate inline proxy.
+            # Step 3c: store SETTLED z = signed raw z + conditional shift.
             for player in all_pool_players:
                 rz = raw_z[player.id]
                 settled: dict[str, float] = {
-                    cat: max(0.0, rz[cat] + pool.z_baseline_shift[cat])
+                    cat: rz[cat] + pool.z_baseline_shift[cat]
                     for cat in categories
                 }
                 _ensure_position_valuation(player, pos)
@@ -636,15 +641,54 @@ def _cat_weights_for(role: str, budget_config: dict[str, Any]) -> dict[str, floa
     return {k: float(v) for k, v in weights.items()}
 
 
-def _safe_mean(nums: Iterable[float]) -> float:
-    nums = list(nums)
-    return statistics.mean(nums) if nums else 0.0
-
-
 def _safe_stdev(nums: Iterable[float]) -> float:
     nums = list(nums)
     # statistics.stdev requires at least 2 points; decide what you want otherwise
     return statistics.stdev(nums) if len(nums) >= 2 else 0.0
+
+
+def _compute_rlp_archetype(
+    rlp_tier: list[Player],
+    categories: list[str],
+    budget_config: dict[str, Any],
+) -> dict[str, float]:
+    """Per-category replacement archetype — the trimmed mean of the RLP tier.
+
+    REPLACES the old per-category phantom baseline (the worst rostered
+    player in EACH category — a composite worse than any real player, which
+    is what inflated RLP dollars). This is one realistic, averaged
+    replacement line per category.
+
+    Trimming sheds the top ``trim_top_pct`` of contributors (highest raw
+    values; lowest for inverted ERA/WHIP) before averaging — one speed or
+    power specialist in a ~6-player RLP tier otherwise drags the baseline
+    far from a realistic archetype. ``sbn_global_mu``, when set, pins SBN
+    to a flat league-wide baseline (most legit bats steal ~0-1 a season);
+    positional SBN scarcity is still carried by the budget allocation.
+
+    Config (budget_config["rlp_archetype"]):
+      trim_top_pct  : fraction of the RLP tier's top contributors to drop
+      sbn_global_mu : flat SBN baseline, or null to use the trimmed mean
+    """
+    cfg = budget_config.get("rlp_archetype") or {}
+    trim_top = float(cfg.get("trim_top_pct", 0.0))
+    sbn_mu = cfg.get("sbn_global_mu")
+
+    archetype: dict[str, float] = {}
+    for cat in categories:
+        if cat == "SBN" and sbn_mu is not None:
+            archetype[cat] = float(sbn_mu)
+            continue
+        vals = sorted(get_player_stat(p, cat) for p in rlp_tier)
+        if not vals:
+            archetype[cat] = 0.0
+            continue
+        n_keep = min(len(vals), max(3, round(len(vals) * (1.0 - trim_top))))
+        # Shed the top contributors: highest raw values, or lowest for
+        # inverted (ERA/WHIP) where "best" means a smaller number.
+        kept = vals[-n_keep:] if is_inverted(cat) else vals[:n_keep]
+        archetype[cat] = sum(kept) / len(kept)
+    return archetype
 
 
 ### ===  oscillation handling / best-snapshot restore  === ###
@@ -793,11 +837,54 @@ def _observe_iter(
         recent.pop(0)
 
 
+def _compute_thin_cell_floor(
+    pools: dict[str, PositionPool],
+    budget_config: dict[str, Any],
+    league_settings: dict[str, Any],
+) -> float | None:
+    """League-derived per-player-z floor for the thin-cell shift.
+
+    For every pool x category, take the rostered tier's per-player settled
+    z (``Σ normalized_z / roster count`` — the same z ``calc_pool_dollars
+    _per_z`` divides the budget by). The floor is ``mean - k * stdev`` of
+    those values across the whole pool set. A cell whose per-player z
+    falls more than ``k`` sigma below the league norm is "thin" — its
+    ``budget / Σz`` would blow up — and gets re-baselined.
+
+    ``k`` is ``budget_config["rlp_archetype"]["thin_cell_k"]`` (default 1).
+    Returns ``None`` when there aren't enough cells to form a distribution.
+    """
+    cfg = budget_config.get("rlp_archetype") or {}
+    k = float(cfg.get("thin_cell_k", 1.0))
+
+    per_player: list[float] = []
+    for pool in pools.values():
+        pos = pool.position
+        rostered = pool.rostered_players
+        if not rostered:
+            continue
+        for c in get_categories(pool.role, league_settings):
+            zs: list[float] = []
+            for p in rostered:
+                pv = p.valuation.valuations_by_position.get(pos)
+                if pv is not None and pv.normalized_z:
+                    zs.append(pv.normalized_z.get(c, 0.0))
+                else:
+                    zs.append(p.valuation.normalized_z.get(c, 0.0))
+            if zs:
+                per_player.append(sum(zs) / len(zs))
+
+    if len(per_player) < 2:
+        return None
+    return statistics.mean(per_player) - k * statistics.pstdev(per_player)
+
+
 def recompute_pool_z_in_place(
     pool: PositionPool,
     pools: dict[str, PositionPool],
     budget_config: dict[str, Any],
     league_settings: dict[str, Any],
+    pp_z_floor: float | None = None,
 ) -> None:
     """Refresh a pool's derived state — rostered-tier stdev, replacement
     raw mean, per-cat baseline shift, per-player settled z, total_pool_z,
@@ -809,6 +896,11 @@ def recompute_pool_z_in_place(
 
     Per-position only: the swap-pass is hitter-pool-specific, where every
     player has a ``primary_position`` set and per-position valuations exist.
+
+    ``pp_z_floor``: when given, a category is also shifted if its rostered
+    per-player raw z falls below this league-derived floor (see
+    ``_compute_thin_cell_floor``) — not just when Σ raw z <= 0. This tames
+    thin cells whose ``budget / Σz`` would otherwise explode.
     """
     categories = get_categories(pool.role, league_settings)
     pos = pool.position
@@ -821,9 +913,7 @@ def recompute_pool_z_in_place(
     pool.rostered_tier_stdevs = {
         c: _safe_stdev([get_player_stat(p, c) for p in rostered]) for c in categories
     }
-    pool.rlp_raw_avg = {
-        c: _safe_mean(get_player_stat(p, c) for p in rlp_tier) for c in categories
-    }
+    pool.rlp_raw_avg = _compute_rlp_archetype(rlp_tier, categories, budget_config)
 
     raw_z: dict[str, dict[str, float]] = {}
     for p in all_pool_players:
@@ -835,15 +925,24 @@ def recompute_pool_z_in_place(
             delta = (x - mu) if c not in ("ERA", "WHIP") else (mu - x)
             zd[c] = (delta / sd) if sd else 0.0
         raw_z[p.id] = zd
+    # Conditional baseline shift — archetype IS the baseline; fall back to
+    # the worst-rostered baseline where the rostered tier is below it
+    # (Σ raw z <= 0) OR where the cell is thin: per-player raw z below the
+    # league floor, so budget / Σz would otherwise explode.
     pool.z_baseline_shift = {}
     for c in categories:
         rost_raw = [raw_z[p.id][c] for p in pool.rostered_players if p.id in raw_z]
+        sigma = sum(rost_raw)
+        n = len(rost_raw)
         min_z = min(rost_raw) if rost_raw else 0.0
-        pool.z_baseline_shift[c] = max(0.0, -min_z)
+        thin = sigma <= 0 or (
+            pp_z_floor is not None and n > 0 and sigma / n < pp_z_floor
+        )
+        pool.z_baseline_shift[c] = max(0.0, -min_z) if thin else 0.0
 
     for p in all_pool_players:
         settled = {
-            c: max(0.0, raw_z[p.id][c] + pool.z_baseline_shift[c])
+            c: raw_z[p.id][c] + pool.z_baseline_shift[c]
             for c in categories
         }
         _ensure_position_valuation(p, pos)

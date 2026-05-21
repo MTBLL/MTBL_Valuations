@@ -77,19 +77,20 @@ def league_summary(league_file):
 
 @pytest.fixture(scope="session")
 def batters_file(fixtures_dir):
-    """Return path to batters fixture file."""
+    """Path to the committed batters fixture — full real-scale data, so
+    the tests exercise the same pool sizes the production pipeline sees."""
     return fixtures_dir / "batters_matched.json"
 
 
 @pytest.fixture(scope="session")
 def pitchers_file(fixtures_dir):
-    """Return path to pitchers fixture file."""
+    """Path to the committed pitchers fixture (full real-scale data)."""
     return fixtures_dir / "pitchers_matched.json"
 
 
 @pytest.fixture(scope="session")
 def league_file(fixtures_dir):
-    """Return path to league summary fixture file."""
+    """Path to the committed league summary fixture."""
     return fixtures_dir / "league_10998_summary.json"
 
 
@@ -121,8 +122,9 @@ def budget_config_file(tmp_path_factory):
             "K/9": 0.40,
             "SVHD": 0.20,
         },
-        "replacement_tier_pct": 0.03,
+        "replacement_tier_pct": 0.5,
         "min_replacement_tier_size": 3,
+        "rlp_archetype": {"trim_top_pct": 0.0, "sbn_global_mu": 1.0, "thin_cell_k": 1.0},
         # Match the production budget_config (repo-root budget_config.json).
         # max_iterations=5 is intentionally low enough that pools hit the
         # cap without natural convergence — the swap-pass + reconciliation

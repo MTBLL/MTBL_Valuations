@@ -34,6 +34,7 @@ from mtbl_valuations.engine.budget import (
 )
 from mtbl_valuations.domain.models import LeagueBudget, Player
 from mtbl_valuations.engine.iteration import (
+    _compute_thin_cell_floor,
     finalize_pool_player_valuations,
     iterate_to_convergence_global,
     iterate_to_convergence_per_position,
@@ -332,6 +333,17 @@ def _run_trp_valuation_inner(
     print("\nPhase 5: Allocating hitter budgets...")
 
     hitter_pools = allocate_position_budgets(hitter_pools, league_budget, budget_config)
+
+    # Re-settle every pool's z against its FINAL tier composition. The
+    # per-position iteration leaves z one tier-reassignment stale for pools
+    # that hit max-iter without converging (e.g. UTIL); recompute settles
+    # archetype + signed z against the current tier so the budget split
+    # sees a consistent Σz.
+    for pool in hitter_pools.values():
+        recompute_pool_z_in_place(
+            pool, hitter_pools, budget_config, league_settings
+        )
+
     hitter_pools = calc_pool_dollars_per_z(hitter_pools)
     distribute_pool_dollars(hitter_pools, store_per_position=True)
 
@@ -347,6 +359,21 @@ def _run_trp_valuation_inner(
         print(
             f"  Phase 5 finalization: resolved {swap_count} dollar mis-allocations"
         )
+
+    # Thin-cell pass: with the swap-pass settled, re-settle z against the
+    # league-derived per-player-z floor so any thin category (whose
+    # budget / Σz would explode) is re-baselined, then re-price. Tiers and
+    # category budgets are unchanged — only z and $/Z are refreshed.
+    pp_z_floor = _compute_thin_cell_floor(
+        hitter_pools, budget_config, league_settings
+    )
+    for pool in hitter_pools.values():
+        recompute_pool_z_in_place(
+            pool, hitter_pools, budget_config, league_settings,
+            pp_z_floor=pp_z_floor,
+        )
+    hitter_pools = calc_pool_dollars_per_z(hitter_pools)
+    distribute_pool_dollars(hitter_pools, store_per_position=True)
 
     # Phase 5 budget snapshot — one log per pool with category budgets,
     # $/Z, baseline shifts and per-player dollars. league_raw / league_budget
@@ -450,6 +477,21 @@ def _run_trp_valuation_inner(
             )
         }
     )
+    # Re-settle z against final tiers, with the thin-cell shift. Reuse the
+    # league per-player-z floor computed in Phase 5: it's measured on the
+    # 42-cell hitter sample (stable), and a per-player z is dimensionless,
+    # so it serves as the league-wide norm for the ~10 pitcher cells too —
+    # a pitcher-only floor would be a tiny sample its own thin cells drag
+    # down (RP K/9 would escape its own floor).
+    for pool in sp_pool.values():
+        recompute_pool_z_in_place(
+            pool, sp_pool, budget_config, league_settings, pp_z_floor=pp_z_floor
+        )
+    for pool in rp_pool.values():
+        recompute_pool_z_in_place(
+            pool, rp_pool, budget_config, league_settings, pp_z_floor=pp_z_floor
+        )
+
     sp_pool.update(calc_pool_dollars_per_z(sp_pool))
     rp_pool.update(calc_pool_dollars_per_z(rp_pool))
 

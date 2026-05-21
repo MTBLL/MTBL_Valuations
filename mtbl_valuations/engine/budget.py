@@ -143,39 +143,53 @@ def allocate_pool_budget(
     return pool
 
 
-def calc_pool_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, PositionPool]:
+def _rostered_category_z(pool: PositionPool, category: str) -> float:
+    """Sum the settled z of a pool's rostered tier in one category.
+
+    Prefer ``valuations_by_position[pool.position]`` when present so
+    cross-pool players (e.g. a UTIL replacement-tier player who's also in
+    1B's replacement tier) get the right pool's z-score for THIS pool's
+    $/Z calibration, even if a later swap-pass refreshed their top-level
+    ``normalized_z`` for another pool.
     """
-    Calculate $/Z conversion rate for each position-category.
+    total = 0.0
+    for player in pool.rostered_players:
+        pv = player.valuation.valuations_by_position.get(pool.position)
+        if pv is not None and pv.normalized_z:
+            total += pv.normalized_z.get(category, 0.0)
+        else:
+            total += player.valuation.normalized_z.get(category, 0.0)
+    return total
+
+
+def calc_pool_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, PositionPool]:
+    """Calculate the $/Z conversion rate for each position-category.
 
     Path B (settled-z) contract: each pool's per-cat z-scores already live
-    on the player (as settled, non-negative-clamped values) — written by
-    the iteration loop. Prefer ``valuations_by_position[pool.position]``
-    when present so cross-pool players (e.g. a UTIL replacement-tier
-    player who's also in 1B's replacement tier) get the right pool's
-    z-score for THIS pool's $/Z calibration, even if a later swap-pass
-    refreshed their top-level ``normalized_z`` for another pool.
+    on the player, written by the iteration loop.
+
+    The conditional baseline shift (``iteration.py`` Step 3b) guarantees a
+    POSITIVE rostered Σz for every category: wherever the replacement
+    archetype would leave ``Σ(raw z) <= 0`` it re-baselines that category
+    to the worst rostered player. So ``$/Z = budget / Σz`` is always
+    well-defined. The guard below is a tripwire — a non-positive Σz means
+    that upstream invariant has broken; fail loud rather than mis-allocate.
     """
     for pool in pools.values():
         pool.dollars_per_z = {}
         pool.total_pool_z = {}
-        pos = pool.position
 
         for category in pool.category_budgets.keys():
-            category_z_scores = []
-            for player in pool.rostered_players:
-                pv = player.valuation.valuations_by_position.get(pos)
-                if pv is not None and pv.normalized_z:
-                    category_z_scores.append(pv.normalized_z.get(category, 0.0))
-                else:
-                    category_z_scores.append(
-                        player.valuation.normalized_z.get(category, 0.0)
-                    )
-            pool_cat_total_z = sum(category_z_scores)
+            pool_cat_total_z = _rostered_category_z(pool, category)
             pool.total_pool_z[category] = pool_cat_total_z
 
-            assert pool_cat_total_z > 0, (
-                f"Total Z-score for {category} in {pool.position} is zero"
-            )
+            if pool_cat_total_z <= 0:
+                raise ValueError(
+                    f"calc_pool_dollars_per_z: {category} in "
+                    f"{pool.position} has rostered Σz={pool_cat_total_z:.4f} "
+                    f"<= 0. The conditional baseline shift should guarantee "
+                    f"Σz > 0 — an upstream invariant has broken."
+                )
             pool.dollars_per_z[category] = (
                 pool.category_budgets[category] / pool_cat_total_z
             )
