@@ -173,12 +173,24 @@ def calc_pool_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, Positio
             pool_cat_total_z = sum(category_z_scores)
             pool.total_pool_z[category] = pool_cat_total_z
 
-            # Signed z (no clamp): a pool's Σz can be <= 0 when its
-            # rostered tier sits at/below the replacement archetype in a
-            # category — or for a 0-budget category (e.g. RP IP, weight 0).
-            # $/Z = 0 there: it contributes no dollars. A non-trivial
-            # budget landing here would surface as a budget-balance miss.
+            # Signed z (no clamp): a pool's Σz can land <= 0. That is only
+            # acceptable for a 0-budget category (e.g. RP IP, weight 0),
+            # where $/Z = 0 contributes nothing. With a POSITIVE budget it
+            # cannot be distributed across non-positive settled z — setting
+            # $/Z = 0 would silently drop that budget and ship an
+            # under-allocated league (downstream validation only prints,
+            # it does not raise). Fail fast instead.
             if pool_cat_total_z <= 0:
+                budget_c = pool.category_budgets.get(category, 0.0)
+                if budget_c > 1e-9:
+                    raise ValueError(
+                        f"calc_pool_dollars_per_z: {category} in "
+                        f"{pool.position} has Σz={pool_cat_total_z:.4f} <= 0 "
+                        f"but a positive category budget of ${budget_c:.2f}. "
+                        f"The budget cannot be distributed across "
+                        f"non-positive settled z — this would silently "
+                        f"under-allocate the league budget."
+                    )
                 pool.dollars_per_z[category] = 0.0
                 continue
             pool.dollars_per_z[category] = (

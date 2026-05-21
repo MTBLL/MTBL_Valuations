@@ -5,6 +5,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from mtbl_valuations.domain.models import HitterStats, Player, PositionPool
+from mtbl_valuations.engine.budget import calc_pool_dollars_per_z
+
 
 class TestBudgetCalculation:
     """Test league budget calculation."""
@@ -225,3 +228,47 @@ class TestDollarsPerZ:
                 f"UTIL {col} ({util_rate:.3f}) should not be >3x "
                 f"max other position rate ({max_other_rate:.3f})"
             )
+
+
+class TestDollarsPerZNonpositiveZ:
+    """calc_pool_dollars_per_z must fail fast when a positive-budget
+    category's rostered Σz is <= 0 — distributing it would silently
+    under-allocate the league budget."""
+
+    @staticmethod
+    def _pool(r_budget: float) -> PositionPool:
+        """SS pool of two rostered hitters whose R settled-z sums to 0
+        (signed z, no clamp) and whose OBP settled-z sums positive."""
+        def _h(pid: str, r_z: float, obp_z: float) -> Player:
+            p = Player(
+                id=pid,
+                name=pid,
+                team="T",
+                positions=["SS"],
+                role="HITTER",
+                stats=HitterStats(
+                    pa=600, ab=540, r=80, hr=20, rbi=70, sbn=10,
+                    obp=0.340, slg=0.450,
+                ),
+            )
+            p.valuation.normalized_z = {"R": r_z, "OBP": obp_z}
+            return p
+
+        pool = PositionPool(position="SS", role="HITTER", roster_slots=2)
+        pool.rostered_players = [_h("a", 1.0, 1.5), _h("b", -1.0, 0.5)]
+        pool.category_budgets = {"R": r_budget, "OBP": 30.0}
+        return pool
+
+    def test_raises_when_positive_budget_has_nonpositive_z(self):
+        """Positive R budget + Σz=0 → hard failure, not a silent drop."""
+        pool = self._pool(r_budget=25.0)
+        with pytest.raises(ValueError, match="under-allocate"):
+            calc_pool_dollars_per_z({"SS": pool})
+
+    def test_zero_budget_category_with_nonpositive_z_is_tolerated(self):
+        """A 0-budget category (e.g. RP IP, weight 0) with Σz<=0 is fine:
+        $/Z = 0 contributes nothing, no exception."""
+        pool = self._pool(r_budget=0.0)
+        result = calc_pool_dollars_per_z({"SS": pool})
+        assert result["SS"].dollars_per_z["R"] == 0.0
+        assert result["SS"].dollars_per_z["OBP"] > 0
