@@ -231,15 +231,14 @@ class TestDollarsPerZ:
 
 
 class TestDollarsPerZNonpositiveZ:
-    """calc_pool_dollars_per_z must fail fast when a positive-budget
-    category's rostered Σz is <= 0 — distributing it would silently
-    under-allocate the league budget."""
+    """calc_pool_dollars_per_z reallocates a non-positive-Σz category's
+    budget to the pool's live categories — money stays in the pool, never
+    silently dropped; only a fully-dead pool is unrecoverable."""
 
     @staticmethod
-    def _pool(r_budget: float) -> PositionPool:
-        """SS pool of two rostered hitters whose R settled-z sums to 0
-        (signed z, no clamp) and whose OBP settled-z sums positive."""
-        def _h(pid: str, r_z: float, obp_z: float) -> Player:
+    def _pool(budgets: dict[str, float], z_by_player: list[dict[str, float]]) -> PositionPool:
+        """SS pool of rostered hitters with hand-set settled z per player."""
+        def _h(pid: str, z: dict[str, float]) -> Player:
             p = Player(
                 id=pid,
                 name=pid,
@@ -251,24 +250,49 @@ class TestDollarsPerZNonpositiveZ:
                     obp=0.340, slg=0.450,
                 ),
             )
-            p.valuation.normalized_z = {"R": r_z, "OBP": obp_z}
+            p.valuation.normalized_z = dict(z)
             return p
 
-        pool = PositionPool(position="SS", role="HITTER", roster_slots=2)
-        pool.rostered_players = [_h("a", 1.0, 1.5), _h("b", -1.0, 0.5)]
-        pool.category_budgets = {"R": r_budget, "OBP": 30.0}
+        pool = PositionPool(
+            position="SS", role="HITTER", roster_slots=len(z_by_player)
+        )
+        pool.rostered_players = [_h(f"p{i}", z) for i, z in enumerate(z_by_player)]
+        pool.category_budgets = dict(budgets)
         return pool
 
-    def test_raises_when_positive_budget_has_nonpositive_z(self):
-        """Positive R budget + Σz=0 → hard failure, not a silent drop."""
-        pool = self._pool(r_budget=25.0)
-        with pytest.raises(ValueError, match="under-allocate"):
-            calc_pool_dollars_per_z({"SS": pool})
+    def test_orphan_budget_reallocated_to_live_categories(self):
+        """R settled-z sums to 0 (dead); its $25 moves to OBP (live).
+        Pool total is conserved, R earns $/Z = 0."""
+        pool = self._pool(
+            budgets={"R": 25.0, "OBP": 30.0},
+            z_by_player=[{"R": 1.0, "OBP": 1.5}, {"R": -1.0, "OBP": 0.5}],
+        )
+        result = calc_pool_dollars_per_z({"SS": pool})["SS"]
+        assert result.dollars_per_z["R"] == 0.0
+        assert result.category_budgets["R"] == 0.0
+        assert result.category_budgets["OBP"] == pytest.approx(55.0)
+        # OBP players' dollars now absorb the full $55 pool budget.
+        distributed = result.total_pool_z["OBP"] * result.dollars_per_z["OBP"]
+        assert distributed == pytest.approx(55.0)
 
-    def test_zero_budget_category_with_nonpositive_z_is_tolerated(self):
-        """A 0-budget category (e.g. RP IP, weight 0) with Σz<=0 is fine:
-        $/Z = 0 contributes nothing, no exception."""
-        pool = self._pool(r_budget=0.0)
-        result = calc_pool_dollars_per_z({"SS": pool})
-        assert result["SS"].dollars_per_z["R"] == 0.0
-        assert result["SS"].dollars_per_z["OBP"] > 0
+    def test_zero_budget_dead_category_tolerated(self):
+        """A 0-budget dead category (e.g. RP IP, weight 0): nothing to
+        move, $/Z = 0, the live category is untouched."""
+        pool = self._pool(
+            budgets={"R": 0.0, "OBP": 30.0},
+            z_by_player=[{"R": 1.0, "OBP": 1.5}, {"R": -1.0, "OBP": 0.5}],
+        )
+        result = calc_pool_dollars_per_z({"SS": pool})["SS"]
+        assert result.dollars_per_z["R"] == 0.0
+        assert result.category_budgets["OBP"] == pytest.approx(30.0)
+        assert result.dollars_per_z["OBP"] > 0
+
+    def test_whole_pool_dead_raises(self):
+        """Every category non-positive with a positive budget: nowhere
+        for the money to go — unrecoverable, must raise."""
+        pool = self._pool(
+            budgets={"R": 25.0, "OBP": 30.0},
+            z_by_player=[{"R": -1.0, "OBP": -1.0}, {"R": -1.0, "OBP": -1.0}],
+        )
+        with pytest.raises(ValueError, match="every category"):
+            calc_pool_dollars_per_z({"SS": pool})

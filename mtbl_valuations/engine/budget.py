@@ -143,58 +143,83 @@ def allocate_pool_budget(
     return pool
 
 
+def _rostered_category_z(pool: PositionPool, category: str) -> float:
+    """Sum the settled z of a pool's rostered tier in one category.
+
+    Prefer ``valuations_by_position[pool.position]`` when present so
+    cross-pool players (e.g. a UTIL replacement-tier player who's also in
+    1B's replacement tier) get the right pool's z-score for THIS pool's
+    $/Z calibration, even if a later swap-pass refreshed their top-level
+    ``normalized_z`` for another pool.
+    """
+    total = 0.0
+    for player in pool.rostered_players:
+        pv = player.valuation.valuations_by_position.get(pool.position)
+        if pv is not None and pv.normalized_z:
+            total += pv.normalized_z.get(category, 0.0)
+        else:
+            total += player.valuation.normalized_z.get(category, 0.0)
+    return total
+
+
 def calc_pool_dollars_per_z(pools: dict[str, PositionPool]) -> dict[str, PositionPool]:
     """
-    Calculate $/Z conversion rate for each position-category.
+    Calculate the $/Z conversion rate for each position-category.
 
     Path B (settled-z) contract: each pool's per-cat z-scores already live
-    on the player (as settled, non-negative-clamped values) — written by
-    the iteration loop. Prefer ``valuations_by_position[pool.position]``
-    when present so cross-pool players (e.g. a UTIL replacement-tier
-    player who's also in 1B's replacement tier) get the right pool's
-    z-score for THIS pool's $/Z calibration, even if a later swap-pass
-    refreshed their top-level ``normalized_z`` for another pool.
+    on the player, written by the iteration loop.
+
+    Signed z (no clamp) means a category's rostered Σz can land <= 0 — the
+    rostered tier produces nothing above the replacement archetype there.
+    A non-positive Σz cannot absorb a budget. Rather than drop that budget
+    (money would vanish from the pool) or hard-fail, its dollars are
+    REALLOCATED to the pool's live categories (Σz > 0), proportional to
+    their budgets. The pool's total budget is conserved; the dead category
+    simply settles to $/Z = 0. Only a pool with NO live category at all
+    (every category <= 0) is unrecoverable and raises.
     """
     for pool in pools.values():
         pool.dollars_per_z = {}
         pool.total_pool_z = {}
-        pos = pool.position
+        categories = list(pool.category_budgets.keys())
 
-        for category in pool.category_budgets.keys():
-            category_z_scores = []
-            for player in pool.rostered_players:
-                pv = player.valuation.valuations_by_position.get(pos)
-                if pv is not None and pv.normalized_z:
-                    category_z_scores.append(pv.normalized_z.get(category, 0.0))
-                else:
-                    category_z_scores.append(
-                        player.valuation.normalized_z.get(category, 0.0)
-                    )
-            pool_cat_total_z = sum(category_z_scores)
-            pool.total_pool_z[category] = pool_cat_total_z
+        # Pass 1: settled-z sum per category.
+        for category in categories:
+            pool.total_pool_z[category] = _rostered_category_z(pool, category)
 
-            # Signed z (no clamp): a pool's Σz can land <= 0. That is only
-            # acceptable for a 0-budget category (e.g. RP IP, weight 0),
-            # where $/Z = 0 contributes nothing. With a POSITIVE budget it
-            # cannot be distributed across non-positive settled z — setting
-            # $/Z = 0 would silently drop that budget and ship an
-            # under-allocated league (downstream validation only prints,
-            # it does not raise). Fail fast instead.
-            if pool_cat_total_z <= 0:
-                budget_c = pool.category_budgets.get(category, 0.0)
-                if budget_c > 1e-9:
-                    raise ValueError(
-                        f"calc_pool_dollars_per_z: {category} in "
-                        f"{pool.position} has Σz={pool_cat_total_z:.4f} <= 0 "
-                        f"but a positive category budget of ${budget_c:.2f}. "
-                        f"The budget cannot be distributed across "
-                        f"non-positive settled z — this would silently "
-                        f"under-allocate the league budget."
-                    )
+        # Pass 2: reallocate the budget of any non-positive-Σz category to
+        # the pool's live categories so no money vanishes from the pool.
+        live = [c for c in categories if pool.total_pool_z[c] > 0]
+        dead = [c for c in categories if pool.total_pool_z[c] <= 0]
+        orphan = sum(pool.category_budgets.get(c, 0.0) for c in dead)
+        if orphan > 1e-9:
+            if not live:
+                raise ValueError(
+                    f"calc_pool_dollars_per_z: {pool.position} has a "
+                    f"positive budget (${orphan:.2f}) but every category's "
+                    f"rostered Σz is <= 0 — no live category to absorb it. "
+                    f"The pool's budget cannot be distributed."
+                )
+            live_budget_total = sum(pool.category_budgets[c] for c in live)
+            for c in live:
+                share = (
+                    pool.category_budgets[c] / live_budget_total
+                    if live_budget_total > 0
+                    else 1.0 / len(live)
+                )
+                pool.category_budgets[c] += orphan * share
+            for c in dead:
+                pool.category_budgets[c] = 0.0
+
+        # Pass 3: $/Z. Dead categories carry no production -> $/Z = 0
+        # (their budget was moved to the live categories in Pass 2).
+        for category in categories:
+            total_z = pool.total_pool_z[category]
+            if total_z <= 0:
                 pool.dollars_per_z[category] = 0.0
                 continue
             pool.dollars_per_z[category] = (
-                pool.category_budgets[category] / pool_cat_total_z
+                pool.category_budgets[category] / total_z
             )
 
     return pools
