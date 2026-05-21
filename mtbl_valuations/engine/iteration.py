@@ -641,11 +641,6 @@ def _cat_weights_for(role: str, budget_config: dict[str, Any]) -> dict[str, floa
     return {k: float(v) for k, v in weights.items()}
 
 
-def _safe_mean(nums: Iterable[float]) -> float:
-    nums = list(nums)
-    return statistics.mean(nums) if nums else 0.0
-
-
 def _safe_stdev(nums: Iterable[float]) -> float:
     nums = list(nums)
     # statistics.stdev requires at least 2 points; decide what you want otherwise

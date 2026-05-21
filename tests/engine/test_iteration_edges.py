@@ -1,5 +1,6 @@
 from mtbl_valuations.domain.models import HitterStats, Player, PositionPool
 from mtbl_valuations.engine.iteration import (
+    _compute_thin_cell_floor,
     iterate_to_convergence_global,
     iterate_to_convergence_per_position,
 )
@@ -194,3 +195,37 @@ def test_swap_pass_positions_is_deterministic_tuple():
 
     assert isinstance(_SWAP_PASS_POSITIONS, tuple)
     assert _SWAP_PASS_POSITIONS == ("C", "1B", "2B", "3B", "SS", "OF", "UTIL")
+
+
+_HITTER_LS = {"batting_categories": ["R", "HR"], "pitching_categories": []}
+
+
+def test_compute_thin_cell_floor_skips_empty_pool_and_returns_none():
+    """An empty rostered tier is skipped; with too few cells to form a
+    distribution the league floor is None (the shift then falls back to
+    the plain Sigma raw z <= 0 trigger)."""
+    pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
+    pool.rostered_players = []
+    pool.replacement_players = []
+    pool.below_replacement = []
+
+    assert _compute_thin_cell_floor({"SS": pool}, {}, _HITTER_LS) is None
+
+
+def test_compute_thin_cell_floor_reads_top_level_z():
+    """Rostered players with no per-position valuation fall back to the
+    top-level normalized_z; the floor still computes (mean - k*stdev)."""
+    p1 = _make_hitter("1", 5)
+    p1.valuation.normalized_z = {"R": 2.0, "HR": 1.0}
+    p2 = _make_hitter("2", 10)
+    p2.valuation.normalized_z = {"R": 1.0, "HR": 0.0}
+
+    pool = PositionPool(position="SS", role="HITTER", roster_slots=2)
+    pool.rostered_players = [p1, p2]
+    pool.replacement_players = []
+    pool.below_replacement = []
+
+    # per-player z: R -> 1.5, HR -> 0.5; mean 1.0, pstdev 0.5; k defaults
+    # to 1.0 -> floor = 1.0 - 0.5 = 0.5.
+    floor = _compute_thin_cell_floor({"SS": pool}, {}, _HITTER_LS)
+    assert floor == 0.5
