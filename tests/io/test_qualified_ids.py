@@ -61,6 +61,26 @@ def test_qualified_ids_missing_current_season_excluded() -> None:
     assert out == set()
 
 
+def test_qualified_ids_missing_current_season_excluded_at_zero_threshold() -> None:
+    """When ``qualified_pa`` is 0 (early-season: no games played yet, so
+    ``team_games_played`` returns 0 and ``compute_qualified_pa`` is 0.0),
+    records with no ``current_season`` block must STILL be excluded.
+
+    Otherwise the cohort silently includes players with no current-season
+    sample at all and dilutes the Savant ranking distribution. Mirrors the
+    categorical ``if not cs: continue`` guard in ``current.py:62`` / ``:135``
+    that protects the loaders from the same edge.
+    """
+    records: list[dict[str, Any]] = [
+        {"id_espn": "no_cs", "stats": {"espn": {}}},
+        {"id_espn": "empty_cs", "stats": {"espn": {"current_season": {}}}},
+        {"id_espn": "none_cs", "stats": {"espn": {"current_season": None}}},
+        _record("has_pa", pa=1.0),
+    ]
+    out = qualified_ids(records, qualified_pa=0.0, pa_field="PA")
+    assert out == {"has_pa"}
+
+
 def test_qualified_ids_non_numeric_pa_treated_as_below_threshold() -> None:
     """String/None playing-time values shouldn't raise — coerce to 0 so they
     fall below any positive threshold without polluting the cohort."""

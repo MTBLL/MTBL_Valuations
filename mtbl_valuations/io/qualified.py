@@ -94,7 +94,14 @@ def qualified_ids(
     """
     out: set[str] = set()
     for r in records:
-        cs = (r.get("stats", {}).get("espn", {}) or {}).get("current_season") or {}
+        cs = (r.get("stats", {}).get("espn", {}) or {}).get("current_season")
+        # Match the loader-side gate (current.py:62 / :135): a record with no
+        # current_season block is excluded categorically, not coerced to 0.
+        # Without this, an early-season `qualified_pa == 0` (no team games
+        # played yet → team_games_played returns 0) would let missing-cs
+        # records into the cohort and dilute the ranking distribution.
+        if not cs:
+            continue
         raw = cs.get(pa_field)
         try:
             pa = float(raw) if raw is not None else 0.0
