@@ -185,11 +185,10 @@ def _run_trp_valuation_inner(
         # Current-season actuals, gated by the sliding qualified threshold.
         qualified_pa = compute_qualified_pa(batters_file, budget_config)
         hitter_players = load_batters_current(batters_file, qualified_pa)
-        min_gs = int(
-            (budget_config.get("qualified", {}) or {}).get("min_gs_current", 0)
-        )
+        from mtbl_valuations.io.qualified import compute_qualified_gs
+        qualified_gs = compute_qualified_gs(batters_file, budget_config)
         pitcher_players = load_pitchers_current(
-            pitchers_file, qualified_pa, min_gs_for_sp=min_gs
+            pitchers_file, qualified_pa, qualified_gs=qualified_gs
         )
     else:
         # mypy narrows `source` to ProjectionSource in this branch.

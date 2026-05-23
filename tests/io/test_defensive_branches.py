@@ -104,26 +104,53 @@ def test_load_pitchers_current_skips_non_pitcher_primary(tmp_path: Path):
     assert pitchers == []
 
 
-def test_load_pitchers_current_skips_sp_below_min_gs(tmp_path: Path):
-    """Current-source SPs with too few starts are filtered. ``outs``
-    aggregates start + relief innings, so a 2-GS spot-starter would
-    otherwise normalize to a 30-IP-per-start "ace.\""""
+def test_load_pitchers_current_role_bidirectional_svhd_vs_gs(tmp_path: Path):
+    """Role flips on GS vs SVHD in both directions so SP and RP pools
+    contain comparable populations. A primary-SP doing more relief
+    (SVHD > GS) belongs in RP; a primary-RP starting more than
+    holding/saving belongs in SP."""
+    from mtbl_valuations.io.current import load_pitchers_current
+
+    # Primary-SP, 2 GS but 5 SVHD: more relief than starts -> RP.
+    sp_to_rp = _cs_pitcher_record(
+        tbf=300, primary_pos="SP", with_outs=True, with_svhd=True
+    )
+    sp_to_rp["id_espn"] = "9001"
+    sp_to_rp["stats"]["espn"]["current_season"]["GS"] = 2
+    sp_to_rp["stats"]["espn"]["current_season"]["SVHD"] = 5
+
+    # Primary-RP, 8 GS and only 1 SVHD: more starts than relief -> SP.
+    rp_to_sp = _cs_pitcher_record(
+        tbf=300, primary_pos="RP", with_outs=True, with_svhd=True
+    )
+    rp_to_sp["id_espn"] = "9002"
+    rp_to_sp["stats"]["espn"]["current_season"]["GS"] = 8
+    rp_to_sp["stats"]["espn"]["current_season"]["SVHD"] = 1
+
+    path = _write_pitchers(tmp_path, [sp_to_rp, rp_to_sp])
+    pitchers = load_pitchers_current(path, qualified_pa=100)
+    roles = {p.player.id: p.player.role for p in pitchers}
+    assert roles["9001"] == "RP"
+    assert roles["9002"] == "SP"
+
+
+def test_load_pitchers_current_qualified_gs_filters_low_gs_sp(tmp_path: Path):
+    """``qualified_gs`` skips primary-SPs whose GS is below the sliding
+    threshold (catches gs=0 — can't per-start-normalize — and filters
+    spot-starters whose ``outs`` is dominated by relief work)."""
     from mtbl_valuations.io.current import load_pitchers_current
 
     rec = _cs_pitcher_record(
         tbf=300, primary_pos="SP", with_outs=True, with_svhd=True
     )
-    rec["stats"]["espn"]["current_season"]["GS"] = 2  # below threshold
+    rec["stats"]["espn"]["current_season"]["GS"] = 4  # below threshold
+    rec["stats"]["espn"]["current_season"]["SVHD"] = 0  # stays SP under rule
     path = _write_pitchers(tmp_path, [rec])
 
-    # No filter (default 0) -> kept and normalized to per-start outs.
-    pitchers = load_pitchers_current(path, qualified_pa=100)
-    assert len(pitchers) == 1
-    assert pitchers[0].stats.outs == pytest.approx(240.0 / 2.0)
-
-    # With min_gs=5 -> filtered out.
-    pitchers = load_pitchers_current(path, qualified_pa=100, min_gs_for_sp=5)
-    assert pitchers == []
+    # No threshold (default 0) -> kept and per-start-normalized.
+    assert len(load_pitchers_current(path, qualified_pa=100)) == 1
+    # Threshold 7 -> filtered.
+    assert load_pitchers_current(path, qualified_pa=100, qualified_gs=7.0) == []
 
 
 def test_load_pitchers_current_derives_outs_when_missing(tmp_path: Path):
@@ -160,6 +187,34 @@ def test_compute_qualified_pa_returns_zero_when_no_current_season(tmp_path: Path
     path = _write_batters(tmp_path, [rec])
     cfg = {"qualified": {"rate_pa_per_game": 1.5, "team_games_percentile": 0.8}}
     assert compute_qualified_pa(path, cfg) == 0
+
+
+def test_compute_qualified_gs_scales_with_team_games(tmp_path: Path):
+    """qualified_gs slides with the season: rate_gs_per_team_game × team
+    games played (80th percentile of position-player G)."""
+    from mtbl_valuations.io.qualified import compute_qualified_gs
+
+    # 10 position players, games played [10..100]; 80th percentile -> 80.
+    batters = [
+        {
+            "id_espn": str(i),
+            "name": f"P{i}",
+            "pro_team": "T",
+            "eligible_slots": ["1B"],
+            "primary_position": "1B",
+            "stats": {"espn": {"current_season": {"G": (i + 1) * 10}}},
+        }
+        for i in range(10)
+    ]
+    path = _write_batters(tmp_path, batters)
+    cfg = {
+        "qualified": {
+            "team_games_percentile": 0.80,
+            "rate_gs_per_team_game": 0.15,
+        }
+    }
+    # 80th percentile of [10..100] -> 80; 0.15 × 80 = 12.0.
+    assert compute_qualified_gs(path, cfg) == pytest.approx(12.0)
 
 
 # ----- io/savant_ranks.py --------------------------------------------

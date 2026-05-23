@@ -25,6 +25,7 @@ from typing import Any
 QUALIFIED_DEFAULTS: dict[str, float] = {
     "rate_pa_per_game": 1.5,
     "team_games_percentile": 0.80,
+    "rate_gs_per_team_game": 0.15,
 }
 
 
@@ -73,6 +74,23 @@ def compute_qualified_pa(batters_file: Path, config: dict[str, Any]) -> float:
         batters_data = json.load(f)
     games = team_games_played(batters_data, cfg["team_games_percentile"])
     return cfg["rate_pa_per_game"] * games
+
+
+def compute_qualified_gs(batters_file: Path, config: dict[str, Any]) -> float:
+    """Sliding qualified-GS threshold for current-source SPs.
+
+    Returns ``rate_gs_per_team_game * team_games_played`` — the SP analog
+    of ``compute_qualified_pa``. A primary-SP whose actual GS falls below
+    this hasn't started enough games to be a meaningful current-source
+    sample (or, in the degenerate gs=0 case, can't be per-start-
+    normalized at all). The threshold slides with the season so the bar
+    is realistic in April and stricter by September.
+    """
+    cfg = _qualified_config(config)
+    with open(batters_file) as f:
+        batters_data = json.load(f)
+    games = team_games_played(batters_data, cfg["team_games_percentile"])
+    return cfg["rate_gs_per_team_game"] * games
 
 
 def qualified_ids(

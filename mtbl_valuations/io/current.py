@@ -115,22 +115,34 @@ def load_batters_current(
 
 
 def load_pitchers_current(
-    file_path: Path, qualified_pa: float, min_gs_for_sp: int = 0
+    file_path: Path,
+    qualified_pa: float,
+    qualified_gs: float = 0.0,
 ) -> list[PitcherPlayer]:
     """Load pitchers valued on current-season actuals.
 
     Pitchers are gated on batters faced (TBF) — the pitcher analog of PA.
 
-    SPs are additionally gated on games started: with the per-start IP
-    normalization (outs / gs), a spot-starter / converted reliever whose
-    ``outs`` aggregates relief work would otherwise look like a 30-IP-
-    per-start "ace." Skip primary-SP records with ``gs < min_gs_for_sp``.
+    Role is decided by GS vs SVHD bidirectionally so SP and RP pools
+    contain comparable populations. SP and RP are essentially different
+    positions and never z-compared (they live in separate pools), so the
+    SVHD-vs-GS split keeps each pool clean: a primary-SP doing more
+    relief than starts moves to RP; a primary-RP starting more than
+    holding/saving moves to SP. A pitcher with no SVHD (e.g. a long-
+    reliever who occasionally spot-starts) is treated as a starter.
+
+    Primary-SPs whose actual GS falls below ``qualified_gs`` are skipped
+    — same sliding-threshold pattern as ``qualified_pa`` for hitters
+    (``rate_gs_per_team_game * team_games_played``). This catches the
+    gs=0 degenerate case (no starts to per-start-normalize against) and
+    filters insufficient-sample starters whose ``outs`` is dominated by
+    long-relief work without enough starts to balance.
 
     Args:
         file_path: Path to pitchers_matched.json
         qualified_pa: Sliding minimum batters-faced for a player to be valued.
-        min_gs_for_sp: Minimum games started for an SP to be valued
-            (current source only). Default 0 = no SP filter.
+        qualified_gs: Sliding minimum games started for a primary-SP to be
+            valued. Default 0 = no SP filter (used by unit tests).
     """
     with open(file_path) as f:
         data = json.load(f)
@@ -156,18 +168,22 @@ def load_pitchers_current(
         if svhd is None:
             svhd = _num(cs.get("SV")) + _num(cs.get("HLD"))
         svhd = _num(svhd)
+        # Bidirectional role classification on GS vs SVHD. SP and RP are
+        # different positions and never z-compared; this keeps each pool
+        # filled with players actually performing that role.
         role: Literal["SP", "RP"]
         if primary_pos == "RP" and gs > svhd:
             role = "SP"
+        elif primary_pos == "SP" and svhd > gs:
+            role = "RP"
         else:
             role = primary_pos
 
-        # SP gating: drop primary-SP records with too few starts to be a
-        # meaningful starter sample (spot-starts, IL-from-day-one). With
-        # the per-start IP normalization below, ``outs`` (which totals
-        # start AND relief innings) divided by a tiny gs would otherwise
-        # produce 30-IP-per-start outliers.
-        if role == "SP" and gs < min_gs_for_sp:
+        # Sliding GS gate for SPs (analog of qualified_pa). Skips gs=0
+        # primary-SPs that can't be per-start-normalized at all, and
+        # filters insufficient-sample starters whose ``outs`` is all
+        # long-relief without enough starts to be priced as a starter.
+        if role == "SP" and gs < qualified_gs:
             skipped += 1
             continue
 
