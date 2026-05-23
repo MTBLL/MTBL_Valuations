@@ -3,15 +3,22 @@
 Upstream publishes a handful of ``_pct_rnk`` fields against the full
 Statcast population, which is skewed (skews toward MLB regulars but
 includes a lot of fringe / partial-season players). The valuations
-pipeline knows the *settled* rostered + replacement-level population —
-the universe of fantasy-relevant players — so it's positioned to publish
-per-field ``_pct_rnk`` values against a more useful baseline.
+pipeline knows the *qualified* universe — the population already gated
+by the sliding qualified-PA threshold elsewhere in the codebase (see
+``io/qualified.compute_qualified_pa`` and ``qualified_ids``) — so it's
+positioned to publish per-field ``_pct_rnk`` values against the cohort
+the rest of the pipeline already considers "fantasy-relevant."
 
-The pct_rnks are computed once per run using the **current** source's
-rostered + RLP tiers as the ranking distribution (savant data itself is
-observed, source-independent). Every player with savant data gets their
-pct_rnks injected — players outside the population still land in the
-population's distribution, just at low percentiles.
+Earlier revisions of this module ranked against the *rostered + RLP*
+slice, but that pool is itself a top-N elite cut: ranking within it
+deflated genuinely-good players to ~10th percentile because bottom-of-
+elite-slice is not bottom-of-MLB. Qualified is a wider, principled
+cohort that still excludes only the noise (sub-replacement / low-PA
+call-ups) the existing thresholds were designed to filter out.
+
+The pct_rnks are computed once per run. Every player with savant data
+gets their pct_rnks injected — players outside the qualified set still
+land in its distribution (open ranking), just at low percentiles.
 
 Output goes directly into the raw record's ``stats.savant.<sub>`` blocks
 so it travels through ``write_merged_player_json`` unchanged. Existing
@@ -149,7 +156,7 @@ def _enrich_records(
 
     # 2) Inject pct_rnks for every record that has savant data, regardless
     #    of population membership — non-population players still get a
-    #    meaningful "where do I land vs the settled universe" number.
+    #    meaningful "where do I land vs the qualified universe" number.
     for record in records:
         savant = record.get("stats", {}).get("savant") or {}
         if not isinstance(savant, dict):
@@ -177,8 +184,8 @@ def _enrich_records(
 def inject_savant_pct_rnks(
     batters_data: list[dict[str, Any]],
     pitchers_data: list[dict[str, Any]],
-    hitter_population_ids: set[str],
-    pitcher_population_ids: set[str],
+    hitter_qualified_ids: set[str],
+    pitcher_qualified_ids: set[str],
 ) -> tuple[int, int]:
     """Top-level entry: enrich both batters and pitchers raw records.
 
@@ -186,14 +193,17 @@ def inject_savant_pct_rnks(
         batters_data / pitchers_data: Raw record lists as loaded from
             ``batters_matched.json`` / ``pitchers_matched.json``. Mutated
             in place.
-        hitter_population_ids: ``id_espn`` strings for hitters whose
-            settled rostered + RLP tier feeds the ranking population.
-        pitcher_population_ids: Same for pitchers.
+        hitter_qualified_ids: ``id_espn`` strings for hitters in the
+            qualified cohort — the population whose values build the
+            ranking distribution. Build with
+            ``io/qualified.qualified_ids(records, qualified_pa, "PA")``.
+        pitcher_qualified_ids: Same for pitchers; use ``"TBF"`` as the
+            playing-time field.
 
     Returns ``(hitter_fields_ranked, pitcher_fields_ranked)`` — the
     distinct field counts that ended up with pct_rnks. Useful for a
     one-line summary log.
     """
-    h = _enrich_records(batters_data, hitter_population_ids, role="HITTER")
-    p = _enrich_records(pitchers_data, pitcher_population_ids, role="PITCHER")
+    h = _enrich_records(batters_data, hitter_qualified_ids, role="HITTER")
+    p = _enrich_records(pitchers_data, pitcher_qualified_ids, role="PITCHER")
     return h, p

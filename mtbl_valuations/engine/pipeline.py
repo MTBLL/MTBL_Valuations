@@ -64,7 +64,7 @@ from mtbl_valuations.io.loader import (
     load_league_settings,
     load_pitchers,
 )
-from mtbl_valuations.io.qualified import compute_qualified_pa
+from mtbl_valuations.io.qualified import compute_qualified_pa, qualified_ids
 from mtbl_valuations.io.savant_ranks import inject_savant_pct_rnks
 from mtbl_valuations.io.synthetic import (
     load_batters_synthetic,
@@ -819,12 +819,6 @@ def run_all_valuations(
     hitter_vals_by_source: dict[str, dict[str, dict[str, Any]]] = {}
     pitcher_vals_by_source: dict[str, dict[str, dict[str, Any]]] = {}
 
-    # Captured for the savant pct_rnk pass — savant data is observed
-    # (source-independent), so the population is the *current* source's
-    # rostered + RLP across all pools.
-    current_hitter_ids: set[str] = set()
-    current_pitcher_ids: set[str] = set()
-
     # Top-level progress: one tick per valuation source. Rich's Progress
     # uses a Live block that scrolls the per-source phase prints above
     # the bar — gives "where are we in the 5-source run" awareness
@@ -865,9 +859,6 @@ def run_all_valuations(
             )
             hitter_vals_by_source[label] = hitter_valuations
             pitcher_vals_by_source[label] = pitcher_valuations
-            if source == "current":
-                current_hitter_ids = hitter_ids
-                current_pitcher_ids = pitcher_ids
             if iter_logger is not None:
                 iter_logger.finalize_summary()
             progress.advance(sources_task)
@@ -880,20 +871,31 @@ def run_all_valuations(
     with open(pitchers_file) as f:
         pitchers_data = json.load(f)
 
-    # Inject pct_rnks into stats.savant.* nested objects using the current
-    # source's rostered+RLP universe as the ranking population. Mutates
-    # records in place so the enriched savant blocks flow through to the
-    # merged JSON below.
-    if current_hitter_ids or current_pitcher_ids:
+    # Inject pct_rnks into stats.savant.* nested objects using the QUALIFIED
+    # population as the ranking cohort (matches the loading-time gate in
+    # io/current.py). Earlier this used current-source rostered + RLP, which
+    # is an elite top-N slice — it deflated genuinely-good players to ~10th
+    # percentile because bottom-of-elite-slice is not bottom-of-MLB.
+    # Qualified is the widest population the rest of the pipeline already
+    # considers "fantasy-relevant," so the cohort aligns. Mutates records in
+    # place so the enriched savant blocks flow through to the merged JSON
+    # below.
+    qualified_pa = compute_qualified_pa(
+        batters_file, load_budget_config(budget_config_file)
+    )
+    hitter_qualified_ids = qualified_ids(batters_data, qualified_pa, "PA")
+    pitcher_qualified_ids = qualified_ids(pitchers_data, qualified_pa, "TBF")
+    if hitter_qualified_ids or pitcher_qualified_ids:
         h_ranked, p_ranked = inject_savant_pct_rnks(
             batters_data,
             pitchers_data,
-            current_hitter_ids,
-            current_pitcher_ids,
+            hitter_qualified_ids,
+            pitcher_qualified_ids,
         )
         print(
             f"  Savant pct_rnks: {h_ranked} hitter fields, {p_ranked} pitcher "
-            f"fields (population: current-source rostered + RLP)"
+            f"fields (population: qualified — {len(hitter_qualified_ids)} "
+            f"hitters, {len(pitcher_qualified_ids)} pitchers)"
         )
 
     write_merged_player_json(

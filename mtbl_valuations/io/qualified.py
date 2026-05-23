@@ -73,3 +73,42 @@ def compute_qualified_pa(batters_file: Path, config: dict[str, Any]) -> float:
         batters_data = json.load(f)
     games = team_games_played(batters_data, cfg["team_games_percentile"])
     return cfg["rate_pa_per_game"] * games
+
+
+def qualified_ids(
+    records: list[dict[str, Any]],
+    qualified_pa: float,
+    pa_field: str,
+) -> set[str]:
+    """``id_espn`` of every record whose ``current_season[pa_field] >= qualified_pa``.
+
+    Mirrors the loading-time gate in ``io/current.py``
+    (``load_batters_current`` checks ``PA``; ``load_pitchers_current`` checks
+    ``TBF``) so any caller can rebuild the *qualified cohort* as a set of IDs
+    without re-running the loaders. Pass ``"PA"`` for batters, ``"TBF"`` for
+    pitchers.
+
+    Records missing ``current_season``, ``id_espn``, or a numeric playing-time
+    value are silently excluded — there's no meaningful "qualifies for what?"
+    answer for them.
+    """
+    out: set[str] = set()
+    for r in records:
+        cs = (r.get("stats", {}).get("espn", {}) or {}).get("current_season")
+        # Match the loader-side gate (current.py:62 / :135): a record with no
+        # current_season block is excluded categorically, not coerced to 0.
+        # Without this, an early-season `qualified_pa == 0` (no team games
+        # played yet → team_games_played returns 0) would let missing-cs
+        # records into the cohort and dilute the ranking distribution.
+        if not cs:
+            continue
+        raw = cs.get(pa_field)
+        try:
+            pa = float(raw) if raw is not None else 0.0
+        except (TypeError, ValueError):
+            pa = 0.0
+        if pa >= qualified_pa:
+            rid = r.get("id_espn")
+            if rid is not None:
+                out.add(str(rid))
+    return out
