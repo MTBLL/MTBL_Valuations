@@ -66,19 +66,39 @@ _PITCHER_LOWER_BETTER = frozenset(
         "wOBA", "xwOBA",
         # Batted-ball quality allowed
         "BABIP", "ISO",
-        "barrels_total", "barrels_per_pa_pct", "barrels_per_bbe_pct",
+        # `barrels` is the `statcast` sub-block key; `barrels_total` is the
+        # `all` sub-block alias — same physical stat, two names, both need
+        # inverting for pitchers.
+        "barrels", "barrels_total",
+        "barrels_per_pa_pct", "barrels_per_bbe_pct",
         "hardhit_pct",
         "adj_exit_velo", "exit_velo",
+        # Statcast sub-block contact-quality (all "batters hitting harder /
+        # farther against me = bad"). avg_ev / max_ev are the statcast-block
+        # analogs of exit_velo above.
+        "avg_ev", "max_ev", "ev50", "ev95_pct", "ev95_plus",
+        "fbld_ev", "gb_ev",
+        "max_distance", "sweetspot_pct",
         "BBdist",
         # Walks / hits / HRs surrendered (counts + rates)
         "BB", "BB_pct", "BB/9", "BB%", "P_BB",
         "H", "P_H",
-        "HR", "HR/9", "HR%", "P_HR",
+        "HR", "HR/9", "HR%", "P_HR", "xHR",
         "ER", "P_R", "R",
         "L", "BLSV",
+        # HR quality allowed — no-doubter rate and count: more obvious HRs =
+        # worse contact suppression for the pitcher.
+        "no_doubter_pct", "no_doubters",
         # Run-expectancy from the BATTER'S side against this pitcher
-        "batter_run_value_per_100",
+        # (`run_exp` is the `all` sub-block analog of `runs_all` — batter's
+        # cumulative run expectancy against the pitcher; higher = worse).
+        "batter_run_value_per_100", "run_exp",
         "runs_all", "runs_chase", "runs_heart", "runs_shadow", "runs_waste",
+        # Observed minus expected ("*diff" = actual - expected). For a
+        # pitcher, positive diff means the batter outperformed his
+        # underlying contact — bad outcome for the pitcher. Lower diff =
+        # better. `xERAdiff` follows the same convention.
+        "wOBAdiff", "xAVGdiff", "xOBPdiff", "xSLGdiff", "xERAdiff", "xHRdiff",
         # ESPN against-rate stats
         "OBA", "OOBP",
         # Sabermetric ERA estimators
