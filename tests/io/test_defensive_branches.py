@@ -104,8 +104,32 @@ def test_load_pitchers_current_skips_non_pitcher_primary(tmp_path: Path):
     assert pitchers == []
 
 
+def test_load_pitchers_current_skips_sp_below_min_gs(tmp_path: Path):
+    """Current-source SPs with too few starts are filtered. ``outs``
+    aggregates start + relief innings, so a 2-GS spot-starter would
+    otherwise normalize to a 30-IP-per-start "ace.\""""
+    from mtbl_valuations.io.current import load_pitchers_current
+
+    rec = _cs_pitcher_record(
+        tbf=300, primary_pos="SP", with_outs=True, with_svhd=True
+    )
+    rec["stats"]["espn"]["current_season"]["GS"] = 2  # below threshold
+    path = _write_pitchers(tmp_path, [rec])
+
+    # No filter (default 0) -> kept and normalized to per-start outs.
+    pitchers = load_pitchers_current(path, qualified_pa=100)
+    assert len(pitchers) == 1
+    assert pitchers[0].stats.outs == pytest.approx(240.0 / 2.0)
+
+    # With min_gs=5 -> filtered out.
+    pitchers = load_pitchers_current(path, qualified_pa=100, min_gs_for_sp=5)
+    assert pitchers == []
+
+
 def test_load_pitchers_current_derives_outs_when_missing(tmp_path: Path):
-    """Pitcher loader: when OUTS missing, falls back to IP × 3."""
+    """Pitcher loader: when OUTS missing, falls back to IP × 3. The
+    current-source SP path then normalizes to per-start outs (outs / GS)
+    so the IP-z is opportunity-fair across IL-thinned rosters."""
     from mtbl_valuations.io.current import load_pitchers_current
 
     rec = _cs_pitcher_record(
@@ -114,8 +138,8 @@ def test_load_pitchers_current_derives_outs_when_missing(tmp_path: Path):
     path = _write_pitchers(tmp_path, [rec])
     pitchers = load_pitchers_current(path, qualified_pa=100)
     assert len(pitchers) == 1
-    # IP=80 → outs=240.
-    assert pitchers[0].stats.outs == pytest.approx(240.0)
+    # IP=80 → outs=240; GS=14 → per-start outs = 240 / 14.
+    assert pitchers[0].stats.outs == pytest.approx(240.0 / 14.0)
 
 
 # ----- io/qualified.py -----------------------------------------------

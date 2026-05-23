@@ -115,15 +115,22 @@ def load_batters_current(
 
 
 def load_pitchers_current(
-    file_path: Path, qualified_pa: float
+    file_path: Path, qualified_pa: float, min_gs_for_sp: int = 0
 ) -> list[PitcherPlayer]:
     """Load pitchers valued on current-season actuals.
 
     Pitchers are gated on batters faced (TBF) — the pitcher analog of PA.
 
+    SPs are additionally gated on games started: with the per-start IP
+    normalization (outs / gs), a spot-starter / converted reliever whose
+    ``outs`` aggregates relief work would otherwise look like a 30-IP-
+    per-start "ace." Skip primary-SP records with ``gs < min_gs_for_sp``.
+
     Args:
         file_path: Path to pitchers_matched.json
         qualified_pa: Sliding minimum batters-faced for a player to be valued.
+        min_gs_for_sp: Minimum games started for an SP to be valued
+            (current source only). Default 0 = no SP filter.
     """
     with open(file_path) as f:
         data = json.load(f)
@@ -155,11 +162,30 @@ def load_pitchers_current(
         else:
             role = primary_pos
 
+        # SP gating: drop primary-SP records with too few starts to be a
+        # meaningful starter sample (spot-starts, IL-from-day-one). With
+        # the per-start IP normalization below, ``outs`` (which totals
+        # start AND relief innings) divided by a tiny gs would otherwise
+        # produce 30-IP-per-start outliers.
+        if role == "SP" and gs < min_gs_for_sp:
+            skipped += 1
+            continue
+
+        # Current-source SPs: normalize ``outs`` to PER-START outs
+        # (``outs / gs``). Mid-season actuals have wildly varying GS counts
+        # (IL stints, rotation churn), so raw IP-z conflates pitching skill
+        # with opportunity. Storing per-start outs makes ``IP = outs / 3``
+        # return per-start IP, so the z compares a rate (innings per start)
+        # the way the rate stats (ERA / WHIP / K9) already do.
+        outs_n = _num(outs)
+        if role == "SP" and gs > 0:
+            outs_n = outs_n / gs
+
         savant = record.get("stats", {}).get("savant") or {}
         exp = savant.get("expected_statistics") or {}
 
         stats = PitcherStats(
-            outs=_num(outs),
+            outs=outs_n,
             era=_num(cs.get("ERA")),
             whip=_num(cs.get("WHIP")),
             k9=_num(cs.get("k_per_9")),

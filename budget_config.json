@@ -51,6 +51,7 @@
     "rate_pa_per_game": 1.5,
     "team_games_percentile": 0.80,
     "min_projection_pa": 200,
-    "min_projection_ip": 30
+    "min_projection_ip": 30,
+    "min_gs_current": 5
   }
 }
