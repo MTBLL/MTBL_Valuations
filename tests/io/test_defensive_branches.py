@@ -213,8 +213,9 @@ def test_compute_qualified_gs_scales_with_team_games(tmp_path: Path):
             "rate_gs_per_team_game": 0.15,
         }
     }
-    # 80th percentile of [10..100] -> 80; 0.15 × 80 = 12.0.
-    assert compute_qualified_gs(path, cfg) == pytest.approx(12.0)
+    # team_games_played: idx = int(10 × 0.80) = 8 -> games[8] = 90.
+    # qualified_gs = 0.15 × 90 = 13.5.
+    assert compute_qualified_gs(path, cfg) == pytest.approx(13.5)
 
 
 # ----- io/savant_ranks.py --------------------------------------------
