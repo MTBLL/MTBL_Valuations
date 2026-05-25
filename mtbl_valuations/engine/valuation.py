@@ -270,15 +270,44 @@ def distribute_pool_dollars(
                 player.valuation.dollar_values = dict(zero_cats)
                 player.valuation.total_dollars = 0.0
 
-        # Below replacement: earned (negative) $ from the formula.
+        # Below replacement: earned (negative) $ from the formula. A
+        # below_replacement player with formula-$ > 0 is a rank-vs-dollar
+        # divergence (tier set by rank, but the $/Z × signed-z math gives
+        # them net positive value) — by definition a below_replacement
+        # player can't be worth positive money, so promote them to RLP
+        # and pin to $0.
+        promote_to_rlp: list[Player] = []
         for player in pool.below_replacement:
             dollar_values = distribute_player_dollars(
                 player, pool, store_in_position_valuation=store_per_position
             )
             total_dollars = sum(dollar_values.values())
-            if player.valuation.primary_position == pos:
-                player.valuation.dollar_values = dollar_values
-                player.valuation.total_dollars = total_dollars
+            if total_dollars > 0:
+                promote_to_rlp.append(player)
+                if (
+                    store_per_position
+                    and pos in player.valuation.valuations_by_position
+                ):
+                    pv = player.valuation.valuations_by_position[pos]
+                    pv.dollar_values = dict(zero_cats)
+                    pv.total_dollars = 0.0
+                    pv.tier = "REPLACEMENT"
+                if player.valuation.primary_position == pos:
+                    player.valuation.dollar_values = dict(zero_cats)
+                    player.valuation.total_dollars = 0.0
+                    player.valuation.tier = "REPLACEMENT"
+            else:
+                if player.valuation.primary_position == pos:
+                    player.valuation.dollar_values = dollar_values
+                    player.valuation.total_dollars = total_dollars
+
+        # Move promoted players from below_replacement to replacement_players.
+        if promote_to_rlp:
+            promoted_ids = {id(p) for p in promote_to_rlp}
+            pool.below_replacement = [
+                p for p in pool.below_replacement if id(p) not in promoted_ids
+            ]
+            pool.replacement_players.extend(promote_to_rlp)
 
 
 def calc_z_scores_for_archetype(
