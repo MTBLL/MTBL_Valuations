@@ -229,30 +229,53 @@ def distribute_pool_dollars(
     pools: dict[str, PositionPool],
     store_per_position: bool = False,
 ) -> None:
-    """
-    Distribute dollar values to all players across multiple position pools.
+    """Distribute dollar values to all players across multiple position pools.
 
-    For multi-position players (hitters with eligibility at multiple positions):
-    - Calculates dollars for each position they're eligible at
-    - Stores position-specific values in valuations_by_position[pos]
-    - Stores top-level dollar_values/total_dollars only for their primary position
+    Tier-specific dollar treatment:
+    - ROSTERED: ``$ = z·$/Z`` (signed z, the formula). Their dollars sum
+      to the pool's category budgets — that's how the league $260×N
+      anchoring is preserved.
+    - REPLACEMENT: pinned to **$0** (the freely-available boundary).
+    - BELOW_REPLACEMENT: ``$ = z·$/Z`` (real, almost always negative —
+      production below the replacement archetype is honest cost, not
+      hidden behind a zero-default).
 
-    For single-position players (pitchers):
-    - Calculates and stores dollars directly at top-level
-
-    Args:
-        pools: Dictionary of position pools with budgets and $/Z rates already calculated
-        store_per_position: If True, stores values in valuations_by_position for multi-eligible players
+    For multi-position players (hitters), per-position values land in
+    ``valuations_by_position[pos]`` (when ``store_per_position=True``)
+    and the top-level mirror is set only for the player's primary
+    position.
     """
     for pos, pool in pools.items():
-        for player in pool.rostered_players + pool.replacement_players:
-            # Calculate dollar values for this position
+        # Rostered: real $ from the formula.
+        for player in pool.rostered_players:
             dollar_values = distribute_player_dollars(
                 player, pool, store_in_position_valuation=store_per_position
             )
             total_dollars = sum(dollar_values.values())
+            if player.valuation.primary_position == pos:
+                player.valuation.dollar_values = dollar_values
+                player.valuation.total_dollars = total_dollars
 
-            # Store at top level if this is the player's primary position
+        # Replacement: pinned to $0 (boundary tier; freely available).
+        zero_cats = {c: 0.0 for c in pool.category_budgets.keys()}
+        for player in pool.replacement_players:
+            if (
+                store_per_position
+                and pos in player.valuation.valuations_by_position
+            ):
+                pv = player.valuation.valuations_by_position[pos]
+                pv.dollar_values = dict(zero_cats)
+                pv.total_dollars = 0.0
+            if player.valuation.primary_position == pos:
+                player.valuation.dollar_values = dict(zero_cats)
+                player.valuation.total_dollars = 0.0
+
+        # Below replacement: earned (negative) $ from the formula.
+        for player in pool.below_replacement:
+            dollar_values = distribute_player_dollars(
+                player, pool, store_in_position_valuation=store_per_position
+            )
+            total_dollars = sum(dollar_values.values())
             if player.valuation.primary_position == pos:
                 player.valuation.dollar_values = dollar_values
                 player.valuation.total_dollars = total_dollars
