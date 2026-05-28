@@ -532,6 +532,19 @@ def _run_trp_valuation_inner(
     # Distribute dollars to all pitcher players
     distribute_pool_dollars(pitchers, store_per_position=False)
 
+    # Pitcher swap-pass: pitcher pools have no multi-eligibility and no
+    # cross-pool budget weighting, so each pool converges independently
+    # via per-pool swap (rost_min vs rlp_max). Without this, the RLP-
+    # formula change leaves big rost<->RLP $-violations (e.g. preseason
+    # SP Burns RLP $14.25 vs Alcantara ROSTERED -$5.98).
+    pitcher_swaps = _resolve_pitcher_dollar_misallocations(
+        pitchers, budget_config, league_settings, pp_z_floor=pp_z_floor
+    )
+    if pitcher_swaps:
+        print(
+            f"  Phase 8 pitcher swap-pass: resolved {pitcher_swaps} dollar mis-allocations"
+        )
+
     # Phase 8 budget snapshot — per-pool log for SP and RP. Pitchers don't
     # share budget across pools (allocate_pool_budget runs independently
     # per pool), so league_raw / league_budget are omitted; the per-pool
@@ -672,6 +685,41 @@ def _resolve_hitter_dollar_misallocations(
         ]
         return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
 
+    def _pool_score(pos: str) -> float:
+        """``rost_min - rlp_max`` for the pool. Positive = no violation;
+        more positive = more headroom. Caller guarantees both tiers are
+        populated by the time Phase 5 runs distribute_pool_dollars."""
+        pool = hitter_pools[pos]
+        rmin = min(dollars_of(p, pos) for p in pool.rostered_players)
+        rmax = max(dollars_of(p, pos) for p in pool.replacement_players)
+        return rmin - rmax
+
+    def _snapshot_pool(pos: str) -> dict[str, Any]:
+        pool = hitter_pools[pos]
+        return {
+            "rost": list(pool.rostered_players),
+            "rlp": list(pool.replacement_players),
+            "below": list(pool.below_replacement),
+            "score": _pool_score(pos),
+        }
+
+    def _restore_pool(pos: str, snap: dict[str, Any]) -> None:
+        pool = hitter_pools[pos]
+        pool.rostered_players = list(snap["rost"])
+        pool.replacement_players = list(snap["rlp"])
+        pool.below_replacement = list(snap["below"])
+
+    # Per-pool best-seen state (highest score so far). When the swap-pass
+    # exits — for any reason: convergence, oscillation, or max_passes —
+    # restore each pool to its best-seen composition rather than accepting
+    # whatever-was-last. Fixes the residual rost<->RLP violations from a
+    # pool's oscillation being masked by other pools' moves (combined
+    # hash differs each pass → no early break → loop ends on max_passes
+    # leaving the catcher pool in an arbitrary state).
+    pool_best: dict[str, dict[str, Any]] = {
+        pos: _snapshot_pool(pos) for pos in present_positions
+    }
+
     total_swaps = 0
     seen_hashes: set[str] = {_combined_hash()}
     for _ in range(max_passes):
@@ -722,6 +770,15 @@ def _resolve_hitter_dollar_misallocations(
         calc_pool_dollars_per_z(hitter_pools)
         distribute_pool_dollars(hitter_pools, store_per_position=True)
 
+        # Update per-pool best-seen state. A pool's score may improve
+        # mid-loop even if the *combined* composition keeps shifting —
+        # capture those high-water marks so the final restore picks the
+        # right one per-pool.
+        for pos in present_positions:
+            score = _pool_score(pos)
+            if score > pool_best[pos]["score"]:
+                pool_best[pos] = _snapshot_pool(pos)
+
         # Oscillation guard: borderline players (eligible in both a base
         # pool and UTIL) make the independent per-pool swap-passes churn
         # the same rostered/RLP pair forever — a period-2+ limit cycle
@@ -731,6 +788,15 @@ def _resolve_hitter_dollar_misallocations(
         if h in seen_hashes:
             break
         seen_hashes.add(h)
+
+    # Restore each pool to its best-seen composition. When a pool
+    # oscillates (e.g. ros C's Perez/Kirk cycle), the loop's "current"
+    # state is whichever swap happened last — but the best-seen state
+    # from earlier passes is the one that minimizes the rost<->RLP
+    # violation. Idempotent when no oscillation occurred (best = current).
+    for pos in present_positions:
+        if pool_best[pos]["score"] > _pool_score(pos):
+            _restore_pool(pos, pool_best[pos])
 
     # Finalization (only when the swap-pass actually moved players —
     # zero swaps means the pools are unchanged from Phase 5 and already
@@ -750,6 +816,96 @@ def _resolve_hitter_dollar_misallocations(
         allocate_position_budgets(hitter_pools, league_budget, budget_config)
         calc_pool_dollars_per_z(hitter_pools)
         distribute_pool_dollars(hitter_pools, store_per_position=True)
+
+    return total_swaps
+
+
+def _resolve_pitcher_dollar_misallocations(
+    pitcher_pools: dict[str, PositionPool],
+    budget_config: dict[str, Any],
+    league_settings: dict[str, Any],
+    max_passes: int = 30,
+    pp_z_floor: float | None = None,
+) -> int:
+    """Per-pool swap-pass for SP / RP. Pitcher pools are independent
+    (no multi-eligibility, no cross-pool budget weighting), so each
+    pool converges on its own — simpler than the hitter swap-pass.
+
+    Same best-seen restore semantics: a pool that oscillates ends in
+    its highest-score state, not whichever swap landed last.
+
+    ``pp_z_floor``: propagated to every internal ``recompute_pool_z_in_place``
+    call so the thin-cell baseline shift (Phase 7) is preserved during
+    the swap-driven recompute. Without it, any pitcher category whose
+    ``z_baseline_shift`` was set only because the cell was below the
+    league thin-cell floor would be unshifted here, re-inflating
+    ``$ / Z`` for that thin cell and re-introducing the rost<->RLP
+    violations the post-Phase-7 recompute was added to dampen.
+    """
+    total_swaps = 0
+    for pos, pool in pitcher_pools.items():
+        def dollars_of(p: Player) -> float:
+            return p.valuation.total_dollars
+
+        def score() -> float:
+            rmin = min(dollars_of(x) for x in pool.rostered_players)
+            rmax = max(dollars_of(x) for x in pool.replacement_players)
+            return rmin - rmax
+
+        def snapshot() -> dict[str, Any]:
+            return {
+                "rost": list(pool.rostered_players),
+                "rlp": list(pool.replacement_players),
+                "below": list(pool.below_replacement),
+                "score": score(),
+            }
+
+        best = snapshot()
+        seen: set[str] = set()
+        for _ in range(max_passes):
+            rost_min = min(pool.rostered_players, key=dollars_of)
+            rlp_max = max(pool.replacement_players, key=dollars_of)
+            if dollars_of(rlp_max) <= dollars_of(rost_min):
+                break
+            pool.rostered_players.remove(rost_min)
+            pool.replacement_players.remove(rlp_max)
+            pool.rostered_players.append(rlp_max)
+            pool.replacement_players.append(rost_min)
+            total_swaps += 1
+
+            recompute_pool_z_in_place(
+                pool,
+                pitcher_pools,
+                budget_config,
+                league_settings,
+                pp_z_floor=pp_z_floor,
+            )
+            calc_pool_dollars_per_z({pos: pool})
+            distribute_pool_dollars({pos: pool}, store_per_position=False)
+
+            cur_score = score()
+            if cur_score > best["score"]:
+                best = snapshot()
+
+            comp_hash = ",".join(sorted(p.id for p in pool.rostered_players))
+            if comp_hash in seen:
+                break
+            seen.add(comp_hash)
+
+        # Restore best-seen if the loop drifted away from it.
+        if best["score"] > score():
+            pool.rostered_players = list(best["rost"])
+            pool.replacement_players = list(best["rlp"])
+            pool.below_replacement = list(best["below"])
+            recompute_pool_z_in_place(
+                pool,
+                pitcher_pools,
+                budget_config,
+                league_settings,
+                pp_z_floor=pp_z_floor,
+            )
+            calc_pool_dollars_per_z({pos: pool})
+            distribute_pool_dollars({pos: pool}, store_per_position=False)
 
     return total_swaps
 
