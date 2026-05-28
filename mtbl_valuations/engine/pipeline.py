@@ -538,7 +538,7 @@ def _run_trp_valuation_inner(
     # formula change leaves big rost<->RLP $-violations (e.g. preseason
     # SP Burns RLP $14.25 vs Alcantara ROSTERED -$5.98).
     pitcher_swaps = _resolve_pitcher_dollar_misallocations(
-        pitchers, budget_config, league_settings
+        pitchers, budget_config, league_settings, pp_z_floor=pp_z_floor
     )
     if pitcher_swaps:
         print(
@@ -827,6 +827,7 @@ def _resolve_pitcher_dollar_misallocations(
     budget_config: dict[str, Any],
     league_settings: dict[str, Any],
     max_passes: int = 30,
+    pp_z_floor: float | None = None,
 ) -> int:
     """Per-pool swap-pass for SP / RP. Pitcher pools are independent
     (no multi-eligibility, no cross-pool budget weighting), so each
@@ -834,6 +835,14 @@ def _resolve_pitcher_dollar_misallocations(
 
     Same best-seen restore semantics: a pool that oscillates ends in
     its highest-score state, not whichever swap landed last.
+
+    ``pp_z_floor``: propagated to every internal ``recompute_pool_z_in_place``
+    call so the thin-cell baseline shift (Phase 7) is preserved during
+    the swap-driven recompute. Without it, any pitcher category whose
+    ``z_baseline_shift`` was set only because the cell was below the
+    league thin-cell floor would be unshifted here, re-inflating
+    ``$ / Z`` for that thin cell and re-introducing the rost<->RLP
+    violations the post-Phase-7 recompute was added to dampen.
     """
     total_swaps = 0
     for pos, pool in pitcher_pools.items():
@@ -870,7 +879,11 @@ def _resolve_pitcher_dollar_misallocations(
             total_swaps += 1
 
             recompute_pool_z_in_place(
-                pool, pitcher_pools, budget_config, league_settings
+                pool,
+                pitcher_pools,
+                budget_config,
+                league_settings,
+                pp_z_floor=pp_z_floor,
             )
             calc_pool_dollars_per_z({pos: pool})
             distribute_pool_dollars({pos: pool}, store_per_position=False)
@@ -890,7 +903,11 @@ def _resolve_pitcher_dollar_misallocations(
             pool.replacement_players = list(best["rlp"])
             pool.below_replacement = list(best["below"])
             recompute_pool_z_in_place(
-                pool, pitcher_pools, budget_config, league_settings
+                pool,
+                pitcher_pools,
+                budget_config,
+                league_settings,
+                pp_z_floor=pp_z_floor,
             )
             calc_pool_dollars_per_z({pos: pool})
             distribute_pool_dollars({pos: pool}, store_per_position=False)
