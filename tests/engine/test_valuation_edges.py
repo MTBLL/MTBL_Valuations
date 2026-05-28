@@ -13,6 +13,7 @@ from mtbl_valuations.engine.valuation import (
     calc_means,
     calc_stdevs,
     calc_z_scores_for_archetype,
+    compute_shadow_valuations,
     distribute_pool_dollars,
     get_categories,
     get_composite_metric,
@@ -340,3 +341,120 @@ def test_resolve_primary_single_pool_skipped():
     changes = resolve_primary_by_best_dollars({"SS": pool})
     assert changes == 0
     assert p.valuation.primary_position == "SS"
+
+
+def test_compute_shadow_valuations_fills_eligible_pool():
+    """A 2B/SS-eligible player primary at 2B gets a shadow SS entry
+    computed against the SS pool's archetype + stdev + $/Z."""
+    # Player is engine-eligible for both 2B and SS, primary at 2B.
+    p = Player(
+        id="dual",
+        name="dual",
+        team="T",
+        positions=["2B", "SS"],
+        role="HITTER",
+        stats=HitterStats(
+            pa=600, ab=540, r=85, hr=22, rbi=75, sbn=12,
+            obp=0.350, slg=0.470,
+        ),
+    )
+    p.valuation.primary_position = "2B"
+    # 2B pool: player is rostered there.
+    pool_2b = PositionPool(position="2B", role="HITTER", roster_slots=1)
+    pool_2b.rostered_players = [p]
+    pool_2b.rlp_raw_avg = {"R": 60.0, "HR": 12.0, "RBI": 55.0, "SBN": 5.0, "OBP": 0.310, "SLG": 0.400}
+    pool_2b.rostered_tier_stdevs = {"R": 15.0, "HR": 8.0, "RBI": 18.0, "SBN": 7.0, "OBP": 0.025, "SLG": 0.040}
+    pool_2b.dollars_per_z = {"R": 2.0, "HR": 2.0, "RBI": 2.0, "SBN": 2.0, "OBP": 4.0, "SLG": 4.0}
+    pool_2b.z_baseline_shift = {c: 0.0 for c in pool_2b.dollars_per_z}
+    # SS pool: player not in any tier (will get shadow); pool has 1 other
+    # filler so tier-rank works.
+    filler = Player(
+        id="ss_filler",
+        name="ss_filler",
+        team="T",
+        positions=["SS"],
+        role="HITTER",
+        stats=HitterStats(
+            pa=600, ab=540, r=70, hr=15, rbi=60, sbn=8,
+            obp=0.320, slg=0.420,
+        ),
+    )
+    filler.valuation.primary_position = "SS"
+    filler.valuation.normalized_z = {"R": 0.5, "HR": 0.5, "RBI": 0.5, "SBN": 0.5, "OBP": 0.5, "SLG": 0.5}
+    filler.valuation.total_z = 3.0
+    pool_ss = PositionPool(position="SS", role="HITTER", roster_slots=1)
+    pool_ss.rostered_players = [filler]
+    pool_ss.rlp_raw_avg = {"R": 65.0, "HR": 14.0, "RBI": 58.0, "SBN": 6.0, "OBP": 0.315, "SLG": 0.410}
+    pool_ss.rostered_tier_stdevs = {"R": 12.0, "HR": 6.0, "RBI": 15.0, "SBN": 5.0, "OBP": 0.020, "SLG": 0.030}
+    pool_ss.dollars_per_z = {"R": 3.0, "HR": 3.0, "RBI": 3.0, "SBN": 3.0, "OBP": 5.0, "SLG": 5.0}
+    pool_ss.z_baseline_shift = {c: 0.0 for c in pool_ss.dollars_per_z}
+
+    league_settings = {
+        "batting_categories": ["R", "HR", "RBI", "SBN", "SLG", "OBP"],
+    }
+
+    count = compute_shadow_valuations(
+        {"2B": pool_2b, "SS": pool_ss}, league_settings
+    )
+    assert count == 1
+    # Shadow entry exists on the player for SS.
+    assert "SS" in p.valuation.valuations_by_position
+    shadow = p.valuation.valuations_by_position["SS"]
+    assert shadow.shadow is True
+    # Shadow z[R] = (85 - 65) / 12 = 1.667. Shadow $[R] = 1.667 * 3 = 5.0.
+    assert abs(shadow.normalized_z["R"] - (85 - 65) / 12) < 1e-6
+    assert abs(shadow.dollar_values["R"] - (85 - 65) / 12 * 3.0) < 1e-6
+    # 2B pool entry was NOT created (player is already rostered there).
+    # (Shadow gen only fills missing entries, never overwrites real ones.)
+    # The player has no real 2B entry in this test fixture either, but
+    # the function correctly skipped 2B because pool_members[2B] = {dual}.
+
+
+def test_compute_shadow_valuations_skips_when_in_pool():
+    """Player who IS in the target pool's tier list doesn't get a shadow."""
+    p = _make_hitter("ros", {"R": 1.0, "HR": 0.0}, pos="SS")
+    pool_ss = PositionPool(position="SS", role="HITTER", roster_slots=1)
+    pool_ss.rostered_players = [p]
+    pool_ss.rlp_raw_avg = {"R": 60.0}
+    pool_ss.rostered_tier_stdevs = {"R": 15.0}
+    pool_ss.dollars_per_z = {"R": 2.0}
+    pool_ss.z_baseline_shift = {"R": 0.0}
+    league_settings = {"batting_categories": ["R"]}
+
+    count = compute_shadow_valuations({"SS": pool_ss}, league_settings)
+    assert count == 0
+
+
+def test_compute_shadow_valuations_skips_util_pool():
+    """UTIL pool is intentionally skipped — every hitter already has a
+    UTIL entry from the UTIL pool build."""
+    p = Player(
+        id="ss_only", name="ss_only", team="T",
+        positions=["SS", "UTIL"], role="HITTER",
+        stats=HitterStats(
+            pa=600, ab=540, r=80, hr=20, rbi=70, sbn=10,
+            obp=0.340, slg=0.450,
+        ),
+    )
+    p.valuation.primary_position = "SS"
+    pool_ss = PositionPool(position="SS", role="HITTER", roster_slots=1)
+    pool_ss.rostered_players = [p]
+    pool_ss.rlp_raw_avg = {"R": 60.0}
+    pool_ss.rostered_tier_stdevs = {"R": 15.0}
+    pool_ss.dollars_per_z = {"R": 2.0}
+    pool_ss.z_baseline_shift = {"R": 0.0}
+    # UTIL pool exists but player has no UTIL entry yet.
+    pool_util = PositionPool(position="UTIL", role="HITTER", roster_slots=1)
+    pool_util.rostered_players = []
+    pool_util.rlp_raw_avg = {"R": 50.0}
+    pool_util.rostered_tier_stdevs = {"R": 12.0}
+    pool_util.dollars_per_z = {"R": 1.5}
+    pool_util.z_baseline_shift = {"R": 0.0}
+    league_settings = {"batting_categories": ["R"]}
+
+    count = compute_shadow_valuations(
+        {"SS": pool_ss, "UTIL": pool_util}, league_settings
+    )
+    # No shadow for UTIL even though player is eligible — UTIL is skipped.
+    assert "UTIL" not in p.valuation.valuations_by_position
+    assert count == 0
