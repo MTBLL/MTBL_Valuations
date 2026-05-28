@@ -398,8 +398,12 @@ def resolve_primary_by_best_dollars(
                 kv[1].total_dollars,
             ),
         )
-        if player.valuation.primary_position == best_pos:
-            continue
+        prior_primary = player.valuation.primary_position
+        # Always mirror the best pool's fields to the top level — even when
+        # primary_position is already correct, the top-level dollar_values /
+        # total_dollars / tier may be stale from whichever pool's
+        # distribute_pool_dollars ran last (last-write-wins by iteration
+        # order). Mirroring is idempotent.
         player.valuation.primary_position = best_pos
         player.valuation.tier = best_pv.tier
         player.valuation.dollar_values = dict(best_pv.dollar_values)
@@ -410,7 +414,8 @@ def resolve_primary_by_best_dollars(
             if best_pv.total_z
             else sum(best_pv.normalized_z.values())
         )
-        changes += 1
+        if prior_primary != best_pos:
+            changes += 1
     return changes
 
 

@@ -386,6 +386,25 @@ def _run_trp_valuation_inner(
         hitter_pools, store_per_position=True, pin_rlp_to_zero=pin_rlp_to_zero
     )
 
+    # Swap-pass #2: the thin-cell reprice can change $/Z enough that a RLP
+    # player's formula-$ now exceeds the lowest rostered's. The first
+    # swap-pass settled the rostered<->RLP invariant against the pre-shift
+    # $/Z; this one re-settles it against the post-shift $/Z. Without it,
+    # ~30 invariant violations land in the exported JSON (verified on real
+    # data 2026-05-28). pp_z_floor is threaded through so the internal
+    # recompute preserves the thin-cell baseline shift.
+    swap_count_post = _resolve_hitter_dollar_misallocations(
+        hitter_pools,
+        league_budget,
+        budget_config,
+        league_settings,
+        pp_z_floor=pp_z_floor,
+    )
+    if swap_count_post:
+        print(
+            f"  Phase 5 post-thin-cell swap-pass: resolved {swap_count_post} dollar mis-allocations"
+        )
+
     # Phase 5 budget snapshot — one log per pool with category budgets,
     # $/Z, baseline shifts and per-player dollars. league_raw / league_budget
     # are SUMS across every rostered hitter / every pool's budget across the
@@ -627,10 +646,18 @@ def _resolve_hitter_dollar_misallocations(
     budget_config: dict[str, Any],
     league_settings: dict[str, Any],
     max_passes: int = 30,
+    pp_z_floor: float | None = None,
 ) -> int:
     """Phase 5 finalization: pair-swap any rostered/RLP players where the
     RLP player out-prices the lowest rostered, then refresh derived pool
     state and re-run Phase 5 dollar distribution. Loop until stable.
+
+    ``pp_z_floor``: when given, propagated to every internal
+    ``recompute_pool_z_in_place`` call so the thin-cell baseline shift
+    is preserved during the swap-driven recompute. The post-thin-cell
+    swap-pass needs this — otherwise its recompute would clobber the
+    shift and re-introduce the explosive $/Z that the thin-cell pass
+    was added to dampen.
 
     Returns the total number of swaps performed across all passes.
     """
@@ -686,13 +713,20 @@ def _resolve_hitter_dollar_misallocations(
             break
 
         # Refresh derived state for every swappable pool, then re-run the
-        # dollar math against the new rostered compositions.
+        # dollar math against the new rostered compositions. The
+        # pp_z_floor stays fixed across passes; recomputing it inside
+        # the loop empirically resolves more rost<->RLP violations but
+        # destabilizes budget conservation on borderline fixture data,
+        # so we accept the residual ~6-15 small-gap violations as a
+        # known limitation (see budget_config._pin_rlp_to_zero_note for
+        # the broader context).
         for pos in swap_positions:
             recompute_pool_z_in_place(
                 hitter_pools[pos],
                 hitter_pools,
                 budget_config,
                 league_settings,
+                pp_z_floor=pp_z_floor,
             )
         allocate_position_budgets(hitter_pools, league_budget, budget_config)
         calc_pool_dollars_per_z(hitter_pools)
@@ -719,7 +753,11 @@ def _resolve_hitter_dollar_misallocations(
         _reconcile_pool_membership(hitter_pools)
         for pos in present_positions:
             recompute_pool_z_in_place(
-                hitter_pools[pos], hitter_pools, budget_config, league_settings
+                hitter_pools[pos],
+                hitter_pools,
+                budget_config,
+                league_settings,
+                pp_z_floor=pp_z_floor,
             )
         allocate_position_budgets(hitter_pools, league_budget, budget_config)
         calc_pool_dollars_per_z(hitter_pools)
