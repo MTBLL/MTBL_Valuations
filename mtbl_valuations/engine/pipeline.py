@@ -687,11 +687,9 @@ def _resolve_hitter_dollar_misallocations(
 
     def _pool_score(pos: str) -> float:
         """``rost_min - rlp_max`` for the pool. Positive = no violation;
-        more positive = more headroom. ``+inf`` when either tier is
-        empty (treat as "no violation possible")."""
+        more positive = more headroom. Caller guarantees both tiers are
+        populated by the time Phase 5 runs distribute_pool_dollars."""
         pool = hitter_pools[pos]
-        if not pool.rostered_players or not pool.replacement_players:
-            return float("inf")
         rmin = min(dollars_of(p, pos) for p in pool.rostered_players)
         rmax = max(dollars_of(p, pos) for p in pool.replacement_players)
         return rmin - rmax
@@ -846,9 +844,6 @@ def _resolve_pitcher_dollar_misallocations(
     """
     total_swaps = 0
     for pos, pool in pitcher_pools.items():
-        if not pool.rostered_players or not pool.replacement_players:
-            continue
-
         def dollars_of(p: Player) -> float:
             return p.valuation.total_dollars
 
