@@ -345,6 +345,75 @@ def distribute_pool_dollars(
             pool.replacement_players.extend(promote_to_rlp)
 
 
+_TIER_RANK = {
+    "ROSTERED": 3,
+    "REPLACEMENT": 2,
+    "BELOW_REPLACEMENT": 1,
+    "": 0,
+}
+
+
+def resolve_primary_by_best_dollars(
+    pools: dict[str, PositionPool],
+) -> int:
+    """For every multi-pool hitter, pick the best pool as their export
+    "headline" and mirror that pool's ``dollar_values`` / ``total_dollars`` /
+    ``tier`` / ``normalized_z`` to the top-level ``valuation`` fields.
+
+    Tier hierarchy beats raw $: a player ROSTERED in one pool and
+    REPLACEMENT in another stays headlined as ROSTERED even if the RLP
+    pool's formula-$ happens to be higher in raw dollars — losing the
+    ROSTERED label would (a) break the budget conservation check (rostered
+    $ across the league must sum to the league total) and (b) mislabel the
+    player's draftable status. Within the same tier, max-$ wins.
+
+    Reason: ``distribute_pool_dollars`` writes top-level only when
+    ``primary_position == pool.position``. With
+    ``assign_primary_position_from_pool`` blanket-stamping
+    ``primary_position=UTIL`` on every UTIL pool member, UTIL-eligible
+    multi-pool players (e.g. SS+UTIL) end up showing their UTIL-pool $ in
+    the JSON even when their base-pool $ is higher. This pass picks the
+    best (tier, $) pool as the export "headline."
+
+    Returns the number of players whose primary_position changed.
+    """
+    seen: dict[int, Player] = {}
+    for pool in pools.values():
+        for player in (
+            pool.rostered_players
+            + pool.replacement_players
+            + pool.below_replacement
+        ):
+            seen.setdefault(id(player), player)
+
+    changes = 0
+    for player in seen.values():
+        vps = player.valuation.valuations_by_position
+        if len(vps) <= 1:
+            continue
+        best_pos, best_pv = max(
+            vps.items(),
+            key=lambda kv: (
+                _TIER_RANK.get(kv[1].tier, 0),
+                kv[1].total_dollars,
+            ),
+        )
+        if player.valuation.primary_position == best_pos:
+            continue
+        player.valuation.primary_position = best_pos
+        player.valuation.tier = best_pv.tier
+        player.valuation.dollar_values = dict(best_pv.dollar_values)
+        player.valuation.total_dollars = best_pv.total_dollars
+        player.valuation.normalized_z = dict(best_pv.normalized_z)
+        player.valuation.total_z = (
+            best_pv.total_z
+            if best_pv.total_z
+            else sum(best_pv.normalized_z.values())
+        )
+        changes += 1
+    return changes
+
+
 def calc_z_scores_for_archetype(
     archetype_stats: dict[str, float],
     reference_players: list[Player],

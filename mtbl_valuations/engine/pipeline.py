@@ -50,6 +50,7 @@ from mtbl_valuations.engine.pools import (
 )
 from mtbl_valuations.engine.valuation import (
     distribute_pool_dollars,
+    resolve_primary_by_best_dollars,
     get_categories,
     get_player_stat,
 )
@@ -562,6 +563,16 @@ def _run_trp_valuation_inner(
 
     write_position_summary_csv(output_dir / "position_summary.csv", all_pools)
     print(f"  ✓ Wrote {output_dir / 'position_summary.csv'}")
+
+    # Multi-pool hitters (e.g. SS+UTIL, 2B+3B): the per-pool
+    # ``valuations_by_position`` dict already has the right per-pool $.
+    # Top-level mirror was last-write-wins by pool iteration order, which
+    # let UTIL stomp the base pool. Pick the highest-$ pool as the export
+    # primary so the JSON headline reflects where the player is actually
+    # most valuable.
+    reprimaried = resolve_primary_by_best_dollars(hitter_pools)
+    if reprimaried:
+        print(f"  Re-primaried {reprimaried} multi-pool hitters by best $")
 
     print("\n=== TRP Valuation Complete ===")
 
