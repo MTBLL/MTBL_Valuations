@@ -220,96 +220,38 @@ def _make_hitter(pid: str, normalized_z: dict[str, float], pos: str = "SS") -> P
     return p
 
 
-def test_distribute_pool_dollars_pin_rlp_to_zero_true():
-    """pin_rlp_to_zero=True: REPLACEMENT tier flat-$0, BELOW gets formula
-    and any positive-formula BELOW gets promoted with $0 mirroring."""
+def test_distribute_pool_dollars_formula_across_tiers():
+    """Every tier gets formula-$. Negative BELOW stays BELOW; positive
+    BELOW promotes to REPLACEMENT with its formula-$ preserved."""
     rost = _make_hitter("rost", {"R": 2.0, "HR": 1.0})
     rlp = _make_hitter("rlp", {"R": 0.5, "HR": 0.0})
     rlp.valuation.valuations_by_position["SS"].tier = "REPLACEMENT"
-    below = _make_hitter("below", {"R": -1.0, "HR": -2.0})
-    below.valuation.valuations_by_position["SS"].tier = "BELOW_REPLACEMENT"
+    below_neg = _make_hitter("below_neg", {"R": -1.0, "HR": -2.0})
+    below_neg.valuation.valuations_by_position["SS"].tier = "BELOW_REPLACEMENT"
+    below_pos = _make_hitter("below_pos", {"R": 1.0, "HR": 0.0})
+    below_pos.valuation.valuations_by_position["SS"].tier = "BELOW_REPLACEMENT"
 
     pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
     pool.category_budgets = {"R": 10.0, "HR": 5.0}
     pool.dollars_per_z = {"R": 5.0, "HR": 5.0}
     pool.rostered_players = [rost]
     pool.replacement_players = [rlp]
-    pool.below_replacement = [below]
+    pool.below_replacement = [below_neg, below_pos]
 
-    distribute_pool_dollars(
-        {"SS": pool}, store_per_position=True, pin_rlp_to_zero=True
-    )
+    distribute_pool_dollars({"SS": pool}, store_per_position=True)
 
-    assert rost.valuation.total_dollars == 15.0  # 2*5 + 1*5
-    # RLP pinned to $0 in both top-level and per-position mirror
-    assert rlp.valuation.total_dollars == 0.0
-    assert rlp.valuation.valuations_by_position["SS"].total_dollars == 0.0
-    # BELOW with negative formula stays BELOW — gets formula-$, no promotion
-    assert below.valuation.total_dollars == -15.0  # -1*5 + -2*5
-    assert below in pool.below_replacement
-    assert below not in pool.replacement_players
-
-
-def test_distribute_pool_dollars_pin_rlp_to_zero_true_promotes_positive_below_to_zero():
-    """pin_rlp_to_zero=True + positive-formula BELOW: player is promoted
-    to REPLACEMENT and pinned to $0 (formula-$ is discarded to match the
-    pinned-RLP semantics)."""
-    rost = _make_hitter("rost", {"R": 2.0, "HR": 1.0})
-    rlp = _make_hitter("rlp", {"R": 0.5, "HR": 0.0})
-    rlp.valuation.valuations_by_position["SS"].tier = "REPLACEMENT"
-    # below with positive net z → would yield formula-$ > 0 → promote
-    below = _make_hitter("below_pos", {"R": 1.0, "HR": 0.0})
-    below.valuation.valuations_by_position["SS"].tier = "BELOW_REPLACEMENT"
-
-    pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
-    pool.category_budgets = {"R": 10.0, "HR": 5.0}
-    pool.dollars_per_z = {"R": 5.0, "HR": 5.0}
-    pool.rostered_players = [rost]
-    pool.replacement_players = [rlp]
-    pool.below_replacement = [below]
-
-    distribute_pool_dollars(
-        {"SS": pool}, store_per_position=True, pin_rlp_to_zero=True
-    )
-
-    # Promoted to REPLACEMENT, $-fields zeroed to match pinned semantics.
-    assert below.valuation.tier == "REPLACEMENT"
-    assert below.valuation.total_dollars == 0.0
-    assert below.valuation.valuations_by_position["SS"].tier == "REPLACEMENT"
-    assert below.valuation.valuations_by_position["SS"].total_dollars == 0.0
-    assert below in pool.replacement_players
-    assert below not in pool.below_replacement
-
-
-def test_distribute_pool_dollars_pin_rlp_to_zero_false_promotes_positive_below():
-    """pin_rlp_to_zero=False default: a BELOW player whose formula nets
-    positive gets promoted to REPLACEMENT — but the formula-$ stands,
-    not $0 (because RLP is not pinned in this mode)."""
-    rost = _make_hitter("rost", {"R": 2.0, "HR": 1.0})
-    rlp = _make_hitter("rlp", {"R": 0.5, "HR": 0.5})
-    rlp.valuation.valuations_by_position["SS"].tier = "REPLACEMENT"
-    # below_with_positive_formula: net z is +1, formula-$ would be +5
-    below = _make_hitter("below_pos", {"R": 1.0, "HR": 0.0})
-    below.valuation.valuations_by_position["SS"].tier = "BELOW_REPLACEMENT"
-
-    pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
-    pool.category_budgets = {"R": 10.0, "HR": 5.0}
-    pool.dollars_per_z = {"R": 5.0, "HR": 5.0}
-    pool.rostered_players = [rost]
-    pool.replacement_players = [rlp]
-    pool.below_replacement = [below]
-
-    distribute_pool_dollars(
-        {"SS": pool}, store_per_position=True, pin_rlp_to_zero=False
-    )
-
-    assert rlp.valuation.total_dollars == 5.0  # 0.5*5 + 0.5*5
-    # promoted: tier flips to REPLACEMENT, but $ stays at formula value
-    assert below.valuation.tier == "REPLACEMENT"
-    assert below.valuation.total_dollars == 5.0  # 1.0*5
-    # moved out of below_replacement list, into replacement_players
-    assert below not in pool.below_replacement
-    assert below in pool.replacement_players
+    # ROSTERED: formula-$
+    assert rost.valuation.total_dollars == 15.0
+    # REPLACEMENT: formula-$ (small ±, not pinned)
+    assert rlp.valuation.total_dollars == 2.5
+    # BELOW negative stays
+    assert below_neg.valuation.total_dollars == -15.0
+    assert below_neg in pool.below_replacement
+    # BELOW positive promoted, formula-$ preserved
+    assert below_pos.valuation.tier == "REPLACEMENT"
+    assert below_pos.valuation.total_dollars == 5.0
+    assert below_pos in pool.replacement_players
+    assert below_pos not in pool.below_replacement
 
 
 def test_resolve_primary_picks_higher_tier_over_higher_dollars():
