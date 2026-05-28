@@ -231,14 +231,17 @@ def distribute_pool_dollars(
 ) -> None:
     """Distribute dollar values to all players across multiple position pools.
 
-    Tier-specific dollar treatment:
-    - ROSTERED: ``$ = z·$/Z`` (signed z, the formula). Their dollars sum
-      to the pool's category budgets — that's how the league $260×N
-      anchoring is preserved.
-    - REPLACEMENT: pinned to **$0** (the freely-available boundary).
-    - BELOW_REPLACEMENT: ``$ = z·$/Z`` (real, almost always negative —
-      production below the replacement archetype is honest cost, not
-      hidden behind a zero-default).
+    Every tier uses the same formula ``$ = z·$/Z``:
+
+    - ROSTERED: positive $, sums to the pool's category budgets (the
+      league $260×N anchor).
+    - REPLACEMENT: small ± $ reflecting what this RLP-tier player is
+      worth relative to the archetype baseline.
+    - BELOW_REPLACEMENT: mostly negative $ (honest production cost
+      below the replacement archetype). If a below player's formula
+      nets positive (rank-vs-dollar divergence), they're promoted to
+      REPLACEMENT and the formula-$ stands — the promotion just
+      corrects the tier label.
 
     For multi-position players (hitters), per-position values land in
     ``valuations_by_position[pos]`` (when ``store_per_position=True``)
@@ -246,7 +249,6 @@ def distribute_pool_dollars(
     position.
     """
     for pos, pool in pools.items():
-        # Rostered: real $ from the formula.
         for player in pool.rostered_players:
             dollar_values = distribute_player_dollars(
                 player, pool, store_in_position_valuation=store_per_position
@@ -256,26 +258,16 @@ def distribute_pool_dollars(
                 player.valuation.dollar_values = dollar_values
                 player.valuation.total_dollars = total_dollars
 
-        # Replacement: pinned to $0 (boundary tier; freely available).
-        zero_cats = {c: 0.0 for c in pool.category_budgets.keys()}
         for player in pool.replacement_players:
-            if (
-                store_per_position
-                and pos in player.valuation.valuations_by_position
-            ):
-                pv = player.valuation.valuations_by_position[pos]
-                pv.dollar_values = dict(zero_cats)
-                pv.total_dollars = 0.0
+            dollar_values = distribute_player_dollars(
+                player, pool, store_in_position_valuation=store_per_position
+            )
+            total_dollars = sum(dollar_values.values())
             if player.valuation.primary_position == pos:
-                player.valuation.dollar_values = dict(zero_cats)
-                player.valuation.total_dollars = 0.0
+                player.valuation.dollar_values = dollar_values
+                player.valuation.total_dollars = total_dollars
 
-        # Below replacement: earned (negative) $ from the formula. A
-        # below_replacement player with formula-$ > 0 is a rank-vs-dollar
-        # divergence (tier set by rank, but the $/Z × signed-z math gives
-        # them net positive value) — by definition a below_replacement
-        # player can't be worth positive money, so promote them to RLP
-        # and pin to $0.
+        # Below replacement: if formula nets positive, promote to RLP.
         promote_to_rlp: list[Player] = []
         for player in pool.below_replacement:
             dollar_values = distribute_player_dollars(
@@ -288,26 +280,98 @@ def distribute_pool_dollars(
                     store_per_position
                     and pos in player.valuation.valuations_by_position
                 ):
-                    pv = player.valuation.valuations_by_position[pos]
-                    pv.dollar_values = dict(zero_cats)
-                    pv.total_dollars = 0.0
-                    pv.tier = "REPLACEMENT"
+                    player.valuation.valuations_by_position[pos].tier = (
+                        "REPLACEMENT"
+                    )
                 if player.valuation.primary_position == pos:
-                    player.valuation.dollar_values = dict(zero_cats)
-                    player.valuation.total_dollars = 0.0
+                    player.valuation.dollar_values = dollar_values
+                    player.valuation.total_dollars = total_dollars
                     player.valuation.tier = "REPLACEMENT"
             else:
                 if player.valuation.primary_position == pos:
                     player.valuation.dollar_values = dollar_values
                     player.valuation.total_dollars = total_dollars
 
-        # Move promoted players from below_replacement to replacement_players.
         if promote_to_rlp:
             promoted_ids = {id(p) for p in promote_to_rlp}
             pool.below_replacement = [
                 p for p in pool.below_replacement if id(p) not in promoted_ids
             ]
             pool.replacement_players.extend(promote_to_rlp)
+
+
+_TIER_RANK = {
+    "ROSTERED": 3,
+    "REPLACEMENT": 2,
+    "BELOW_REPLACEMENT": 1,
+    "": 0,
+}
+
+
+def resolve_primary_by_best_dollars(
+    pools: dict[str, PositionPool],
+) -> int:
+    """For every multi-pool hitter, pick the best pool as their export
+    "headline" and mirror that pool's ``dollar_values`` / ``total_dollars`` /
+    ``tier`` / ``normalized_z`` to the top-level ``valuation`` fields.
+
+    Tier hierarchy beats raw $: a player ROSTERED in one pool and
+    REPLACEMENT in another stays headlined as ROSTERED even if the RLP
+    pool's formula-$ happens to be higher in raw dollars — losing the
+    ROSTERED label would (a) break the budget conservation check (rostered
+    $ across the league must sum to the league total) and (b) mislabel the
+    player's draftable status. Within the same tier, max-$ wins.
+
+    Reason: ``distribute_pool_dollars`` writes top-level only when
+    ``primary_position == pool.position``. With
+    ``assign_primary_position_from_pool`` blanket-stamping
+    ``primary_position=UTIL`` on every UTIL pool member, UTIL-eligible
+    multi-pool players (e.g. SS+UTIL) end up showing their UTIL-pool $ in
+    the JSON even when their base-pool $ is higher. This pass picks the
+    best (tier, $) pool as the export "headline."
+
+    Returns the number of players whose primary_position changed.
+    """
+    seen: dict[int, Player] = {}
+    for pool in pools.values():
+        for player in (
+            pool.rostered_players
+            + pool.replacement_players
+            + pool.below_replacement
+        ):
+            seen.setdefault(id(player), player)
+
+    changes = 0
+    for player in seen.values():
+        vps = player.valuation.valuations_by_position
+        if len(vps) <= 1:
+            continue
+        best_pos, best_pv = max(
+            vps.items(),
+            key=lambda kv: (
+                _TIER_RANK.get(kv[1].tier, 0),
+                kv[1].total_dollars,
+            ),
+        )
+        prior_primary = player.valuation.primary_position
+        # Always mirror the best pool's fields to the top level — even when
+        # primary_position is already correct, the top-level dollar_values /
+        # total_dollars / tier may be stale from whichever pool's
+        # distribute_pool_dollars ran last (last-write-wins by iteration
+        # order). Mirroring is idempotent.
+        player.valuation.primary_position = best_pos
+        player.valuation.tier = best_pv.tier
+        player.valuation.dollar_values = dict(best_pv.dollar_values)
+        player.valuation.total_dollars = best_pv.total_dollars
+        player.valuation.normalized_z = dict(best_pv.normalized_z)
+        player.valuation.total_z = (
+            best_pv.total_z
+            if best_pv.total_z
+            else sum(best_pv.normalized_z.values())
+        )
+        if prior_primary != best_pos:
+            changes += 1
+    return changes
 
 
 def calc_z_scores_for_archetype(
