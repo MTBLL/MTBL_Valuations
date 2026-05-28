@@ -228,17 +228,29 @@ def distribute_player_dollars(
 def distribute_pool_dollars(
     pools: dict[str, PositionPool],
     store_per_position: bool = False,
+    pin_rlp_to_zero: bool = False,
 ) -> None:
     """Distribute dollar values to all players across multiple position pools.
 
     Tier-specific dollar treatment:
+
     - ROSTERED: ``$ = z·$/Z`` (signed z, the formula). Their dollars sum
       to the pool's category budgets — that's how the league $260×N
       anchoring is preserved.
-    - REPLACEMENT: pinned to **$0** (the freely-available boundary).
+    - REPLACEMENT: ``$ = z·$/Z`` by default — the formula gives small ±$
+      values that read as "what this RLP-tier player is actually worth
+      relative to the archetype baseline." When ``pin_rlp_to_zero=True``,
+      pinned to $0 instead (RLP-as-freely-available-boundary semantics).
     - BELOW_REPLACEMENT: ``$ = z·$/Z`` (real, almost always negative —
       production below the replacement archetype is honest cost, not
-      hidden behind a zero-default).
+      hidden behind a zero-default). If a below_replacement player's
+      formula nets positive (rank-vs-dollar divergence), they're
+      promoted to REPLACEMENT (and pinned to $0 in that tier if
+      ``pin_rlp_to_zero``; otherwise the formula stands).
+
+    A/B note: ``pin_rlp_to_zero`` defaults to ``False`` (formula on RLP).
+    Flip via ``budget_config.json`` to compare $-spread outcomes without
+    code change.
 
     For multi-position players (hitters), per-position values land in
     ``valuations_by_position[pos]`` (when ``store_per_position=True``)
@@ -256,10 +268,19 @@ def distribute_pool_dollars(
                 player.valuation.dollar_values = dollar_values
                 player.valuation.total_dollars = total_dollars
 
-        # Replacement: pinned to $0 (boundary tier; freely available).
+        # Replacement: formula by default, optionally pinned to $0.
         zero_cats = {c: 0.0 for c in pool.category_budgets.keys()}
         for player in pool.replacement_players:
-            if (
+            if pin_rlp_to_zero:
+                dollar_values = dict(zero_cats)
+                total_dollars = 0.0
+            else:
+                dollar_values = distribute_player_dollars(
+                    player, pool, store_in_position_valuation=store_per_position
+                )
+                total_dollars = sum(dollar_values.values())
+
+            if pin_rlp_to_zero and (
                 store_per_position
                 and pos in player.valuation.valuations_by_position
             ):
@@ -267,15 +288,13 @@ def distribute_pool_dollars(
                 pv.dollar_values = dict(zero_cats)
                 pv.total_dollars = 0.0
             if player.valuation.primary_position == pos:
-                player.valuation.dollar_values = dict(zero_cats)
-                player.valuation.total_dollars = 0.0
+                player.valuation.dollar_values = dollar_values
+                player.valuation.total_dollars = total_dollars
 
-        # Below replacement: earned (negative) $ from the formula. A
-        # below_replacement player with formula-$ > 0 is a rank-vs-dollar
-        # divergence (tier set by rank, but the $/Z × signed-z math gives
-        # them net positive value) — by definition a below_replacement
-        # player can't be worth positive money, so promote them to RLP
-        # and pin to $0.
+        # Below replacement: earned (mostly negative) $ from the formula.
+        # If a below_replacement player's math nets positive, they're a
+        # rank-vs-dollar divergence — promote to REPLACEMENT so tier
+        # label matches dollar sign.
         promote_to_rlp: list[Player] = []
         for player in pool.below_replacement:
             dollar_values = distribute_player_dollars(
@@ -284,18 +303,34 @@ def distribute_pool_dollars(
             total_dollars = sum(dollar_values.values())
             if total_dollars > 0:
                 promote_to_rlp.append(player)
-                if (
-                    store_per_position
-                    and pos in player.valuation.valuations_by_position
-                ):
-                    pv = player.valuation.valuations_by_position[pos]
-                    pv.dollar_values = dict(zero_cats)
-                    pv.total_dollars = 0.0
-                    pv.tier = "REPLACEMENT"
-                if player.valuation.primary_position == pos:
-                    player.valuation.dollar_values = dict(zero_cats)
-                    player.valuation.total_dollars = 0.0
-                    player.valuation.tier = "REPLACEMENT"
+                # When pinning RLP to $0, the promoted player must have
+                # their $ zeroed to match the tier. With the formula on
+                # (default), the formula-$ stands — the promotion just
+                # corrects the tier label.
+                if pin_rlp_to_zero:
+                    if (
+                        store_per_position
+                        and pos in player.valuation.valuations_by_position
+                    ):
+                        pv = player.valuation.valuations_by_position[pos]
+                        pv.dollar_values = dict(zero_cats)
+                        pv.total_dollars = 0.0
+                        pv.tier = "REPLACEMENT"
+                    if player.valuation.primary_position == pos:
+                        player.valuation.dollar_values = dict(zero_cats)
+                        player.valuation.total_dollars = 0.0
+                        player.valuation.tier = "REPLACEMENT"
+                else:
+                    if (
+                        store_per_position
+                        and pos in player.valuation.valuations_by_position
+                    ):
+                        pv = player.valuation.valuations_by_position[pos]
+                        pv.tier = "REPLACEMENT"
+                    if player.valuation.primary_position == pos:
+                        player.valuation.dollar_values = dollar_values
+                        player.valuation.total_dollars = total_dollars
+                        player.valuation.tier = "REPLACEMENT"
             else:
                 if player.valuation.primary_position == pos:
                     player.valuation.dollar_values = dollar_values

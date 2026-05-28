@@ -25,6 +25,7 @@
   },
   "replacement_tier_pct": 0.5,
   "min_replacement_tier_size": 3,
+  "pin_rlp_to_zero": false,
   "rlp_archetype": {
     "trim_top_pct": 0.0,
     "sbn_global_mu": 1.0,

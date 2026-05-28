@@ -348,8 +348,12 @@ def _run_trp_valuation_inner(
             pool, hitter_pools, budget_config, league_settings
         )
 
+    pin_rlp_to_zero = bool(budget_config.get("pin_rlp_to_zero", False))
+
     hitter_pools = calc_pool_dollars_per_z(hitter_pools)
-    distribute_pool_dollars(hitter_pools, store_per_position=True)
+    distribute_pool_dollars(
+        hitter_pools, store_per_position=True, pin_rlp_to_zero=pin_rlp_to_zero
+    )
 
     # Phase 5 finalization swap-pass: rank-by-z and rank-by-dollar can
     # diverge when ``$/Z`` weighting interacts with category mix. If any
@@ -377,7 +381,9 @@ def _run_trp_valuation_inner(
             pp_z_floor=pp_z_floor,
         )
     hitter_pools = calc_pool_dollars_per_z(hitter_pools)
-    distribute_pool_dollars(hitter_pools, store_per_position=True)
+    distribute_pool_dollars(
+        hitter_pools, store_per_position=True, pin_rlp_to_zero=pin_rlp_to_zero
+    )
 
     # Phase 5 budget snapshot — one log per pool with category budgets,
     # $/Z, baseline shifts and per-player dollars. league_raw / league_budget
@@ -510,7 +516,9 @@ def _run_trp_valuation_inner(
         assign_primary_position_from_pool(pool)
 
     # Distribute dollars to all pitcher players
-    distribute_pool_dollars(pitchers, store_per_position=False)
+    distribute_pool_dollars(
+        pitchers, store_per_position=False, pin_rlp_to_zero=pin_rlp_to_zero
+    )
 
     # Phase 8 budget snapshot — per-pool log for SP and RP. Pitchers don't
     # share budget across pools (allocate_pool_budget runs independently
@@ -615,6 +623,7 @@ def _resolve_hitter_dollar_misallocations(
 
     Returns the total number of swaps performed across all passes.
     """
+    pin_rlp_to_zero = bool(budget_config.get("pin_rlp_to_zero", False))
 
     def dollars_of(player: Player, pos: str) -> float:
         pv = player.valuation.valuations_by_position.get(pos)
@@ -676,7 +685,9 @@ def _resolve_hitter_dollar_misallocations(
             )
         allocate_position_budgets(hitter_pools, league_budget, budget_config)
         calc_pool_dollars_per_z(hitter_pools)
-        distribute_pool_dollars(hitter_pools, store_per_position=True)
+        distribute_pool_dollars(
+            hitter_pools, store_per_position=True, pin_rlp_to_zero=pin_rlp_to_zero
+        )
 
         # Oscillation guard: borderline players (eligible in both a base
         # pool and UTIL) make the independent per-pool swap-passes churn
@@ -701,7 +712,9 @@ def _resolve_hitter_dollar_misallocations(
             )
         allocate_position_budgets(hitter_pools, league_budget, budget_config)
         calc_pool_dollars_per_z(hitter_pools)
-        distribute_pool_dollars(hitter_pools, store_per_position=True)
+        distribute_pool_dollars(
+            hitter_pools, store_per_position=True, pin_rlp_to_zero=pin_rlp_to_zero
+        )
 
     return total_swaps
 
