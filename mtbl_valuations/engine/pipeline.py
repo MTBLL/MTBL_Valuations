@@ -589,26 +589,25 @@ def _run_trp_valuation_inner(
     write_position_summary_csv(output_dir / "position_summary.csv", all_pools)
     print(f"  ✓ Wrote {output_dir / 'position_summary.csv'}")
 
-    # Shadow valuations FIRST: refresh stale per-pool entries (left from
-    # pre-dedupe iteration) and fill in missing pools as shadow=true.
-    # Must run before resolve_primary so the candidate set sees correct
-    # shadow flags. For every multi-eligible hitter, this fills in the
-    # missing per-pool valuations (engine-eligible pools where they
-    # don't currently have an entry — e.g. a 2B/SS player primary at 2B
-    # gets a shadow SS entry). Display-only: no budget effect, no
-    # swap-pass involvement.
-    shadow_count = compute_shadow_valuations(hitter_pools, league_settings)
-    if shadow_count:
-        print(f"  Computed {shadow_count} shadow per-pool valuations")
-
-    # Now pick the headline pool. Prefers non-UTIL non-shadow (the
-    # player's natural fielding position where they're really rostered/
-    # RLP). UTIL stomps base pools when its $-value is higher, so the
-    # headline reflects the player's actual fielding identity rather
-    # than the universal-DH slot.
+    # Multi-pool hitters (e.g. SS+UTIL, 2B+3B): the per-pool
+    # ``valuations_by_position`` dict already has the right per-pool $.
+    # Top-level mirror was last-write-wins by pool iteration order, which
+    # let UTIL stomp the base pool. Pick the highest-$ pool as the export
+    # primary so the JSON headline reflects where the player is actually
+    # most valuable.
     reprimaried = resolve_primary_by_best_dollars(hitter_pools)
     if reprimaried:
         print(f"  Re-primaried {reprimaried} multi-pool hitters by best $")
+
+    # Shadow valuations: for every multi-eligible hitter, fill in the
+    # missing per-pool valuations (engine-eligible pools where they don't
+    # currently have an entry — e.g. a 2B/SS player primary at 2B gets a
+    # shadow SS entry). Display-only: no budget effect, no swap-pass
+    # involvement. The dashboard can show position-context $ when filtered
+    # by pool.
+    shadow_count = compute_shadow_valuations(hitter_pools, league_settings)
+    if shadow_count:
+        print(f"  Computed {shadow_count} shadow per-pool valuations")
 
     print("\n=== TRP Valuation Complete ===")
 
