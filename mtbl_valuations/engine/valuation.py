@@ -379,15 +379,10 @@ def compute_shadow_valuations(
             raw_z: dict[str, float] = {}
             for c in categories:
                 mu = pool.rlp_raw_avg.get(c, 0.0)
-                sd = pool.rostered_tier_stdevs.get(c, 0.0)
+                sd = pool.rostered_tier_stdevs[c]
                 stat = get_player_stat(player, c)
-                if not sd:
-                    raw_z[c] = 0.0
-                else:
-                    delta = (
-                        (mu - stat) if c in ("ERA", "WHIP") else (stat - mu)
-                    )
-                    raw_z[c] = delta / sd
+                delta = (mu - stat) if c in ("ERA", "WHIP") else (stat - mu)
+                raw_z[c] = delta / sd
             settled = {
                 c: raw_z[c] + pool.z_baseline_shift.get(c, 0.0)
                 for c in categories
@@ -398,7 +393,7 @@ def compute_shadow_valuations(
             }
             total_z = sum(settled.values())
             total_dollars = sum(dollars.values())
-            tier = _shadow_tier_rank(total_z, pool)
+            tier = _shadow_tier_rank(total_dollars, pool)
             player.valuation.valuations_by_position[pos] = PositionValuation(
                 position=pos,
                 normalized_z=settled,
@@ -406,30 +401,43 @@ def compute_shadow_valuations(
                 dollar_values=dollars,
                 total_dollars=total_dollars,
                 tier=tier,
-                position_rank=_shadow_position_rank(total_z, pool),
+                position_rank=_shadow_position_rank(total_dollars, pool),
                 shadow=True,
             )
             shadow_count += 1
     return shadow_count
 
 
-def _shadow_tier_rank(shadow_total_z: float, pool: PositionPool) -> str:
-    """Assign a tier to a hypothetical shadow player by inserting their
-    ``total_z`` into the pool's ranked rostered+RLP+below list. Top
-    ``len(rostered)`` → ROSTERED-equiv; next ``len(rlp)`` → REPLACEMENT;
-    else BELOW_REPLACEMENT."""
-    n_rostered = len(pool.rostered_players)
-    n_rlp = len(pool.replacement_players)
-    # Collect pool total_z (use per-position when present, else top-level).
-    member_z: list[float] = []
+def _pool_member_dollars(pool: PositionPool) -> list[float]:
+    """Per-pool ``total_dollars`` for every tier member, sorted descending.
+    Prefer per-position valuation (where the swap-pass and finalized
+    pricing live); fall back to top-level."""
+    out: list[float] = []
     for p in (
         pool.rostered_players + pool.replacement_players + pool.below_replacement
     ):
         pv = p.valuation.valuations_by_position.get(pool.position)
-        member_z.append(pv.total_z if pv else p.valuation.total_z)
-    member_z.sort(reverse=True)
-    # Find the shadow's rank position.
-    rank = sum(1 for z in member_z if z > shadow_total_z)
+        out.append(pv.total_dollars if pv else p.valuation.total_dollars)
+    out.sort(reverse=True)
+    return out
+
+
+def _shadow_tier_rank(shadow_dollars: float, pool: PositionPool) -> str:
+    """Tier a shadow player by inserting their ``total_dollars`` into
+    the pool's ``$``-ranked member list. The pool's finalized pricing
+    and swap-pass settle on ``$``-rank (not ``z``-rank: per-category
+    ``$/Z`` weights skew the two orderings), so the shadow tier label
+    has to use the same metric — otherwise the same $-value could
+    label ROSTERED here while a higher $-value sits in REPLACEMENT,
+    contradicting the pool's pricing.
+
+    Top ``len(rostered)`` by $ → ROSTERED; next ``len(rlp)`` →
+    REPLACEMENT; else BELOW_REPLACEMENT.
+    """
+    n_rostered = len(pool.rostered_players)
+    n_rlp = len(pool.replacement_players)
+    member_dollars = _pool_member_dollars(pool)
+    rank = sum(1 for d in member_dollars if d > shadow_dollars)
     if rank < n_rostered:
         return "ROSTERED"
     if rank < n_rostered + n_rlp:
@@ -437,15 +445,9 @@ def _shadow_tier_rank(shadow_total_z: float, pool: PositionPool) -> str:
     return "BELOW_REPLACEMENT"
 
 
-def _shadow_position_rank(shadow_total_z: float, pool: PositionPool) -> int:
-    member_z: list[float] = []
-    for p in (
-        pool.rostered_players + pool.replacement_players + pool.below_replacement
-    ):
-        pv = p.valuation.valuations_by_position.get(pool.position)
-        member_z.append(pv.total_z if pv else p.valuation.total_z)
-    member_z.sort(reverse=True)
-    return sum(1 for z in member_z if z > shadow_total_z) + 1
+def _shadow_position_rank(shadow_dollars: float, pool: PositionPool) -> int:
+    """1-indexed $-rank of the shadow within the pool's member list."""
+    return sum(1 for d in _pool_member_dollars(pool) if d > shadow_dollars) + 1
 
 
 def resolve_primary_by_best_dollars(
