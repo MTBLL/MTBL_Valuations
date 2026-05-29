@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import math
 import statistics
-from typing import Any
+from typing import Any, Literal
 
-from ..domain.models import HitterStats, PitcherStats, Player, PositionPool, Role
+from ..domain.models import (
+    HitterStats,
+    PitcherStats,
+    Player,
+    PositionPool,
+    PositionValuation,
+    Role,
+    Tier,
+)
 
 
 def is_inverted(category: str) -> bool:
@@ -306,6 +314,141 @@ _TIER_RANK = {
     "BELOW_REPLACEMENT": 1,
     "": 0,
 }
+
+
+def compute_shadow_valuations(
+    pools: dict[str, PositionPool],
+    league_settings: dict[str, Any],
+) -> int:
+    """For every multi-eligible player, populate a shadow ``PositionValuation``
+    in each pool they're engine-eligible for (``pool.position in player.positions``)
+    but don't currently have an entry in.
+
+    Shadow valuations are display-only: they tell the dashboard "what this
+    player would be worth in pool X" without affecting pool X's budget,
+    rostered cohort, or any swap-pass machinery. The shadow $-formula
+    matches the legit one:
+
+        shadow_z[cat] = (raw_stat - pool.rlp_raw_avg[cat]) / pool.rostered_tier_stdevs[cat]
+                       + pool.z_baseline_shift[cat]
+        shadow_$[cat] = shadow_z[cat] * pool.dollars_per_z[cat]
+
+    Tier is by total_z rank-insertion into the pool's existing
+    ROSTERED+REPLACEMENT+BELOW members: top ``roster_slots`` → ROSTERED-equiv,
+    next RLP-band → REPLACEMENT-equiv, else BELOW_REPLACEMENT-equiv.
+
+    ``shadow=True`` flag on the PositionValuation lets the dashboard
+    distinguish shadow-$ from real-$ (e.g. show grayed-out, or label
+    "if rostered at SS").
+
+    UTIL pool is intentionally skipped — every hitter already has a UTIL
+    entry from the UTIL pool build, so there's nothing to shadow there.
+
+    Returns the count of shadow entries created.
+    """
+    shadow_count = 0
+    # Collect every unique player + their current pool memberships.
+    seen: dict[int, Player] = {}
+    pool_members: dict[str, set[str]] = {}
+    for pos, pool in pools.items():
+        members = set()
+        for player in (
+            pool.rostered_players
+            + pool.replacement_players
+            + pool.below_replacement
+        ):
+            seen.setdefault(id(player), player)
+            members.add(player.id)
+        pool_members[pos] = members
+
+    for player in seen.values():
+        for pos, pool in pools.items():
+            if pos == "UTIL":
+                continue
+            if pos not in player.positions:
+                continue
+            # A per-pool entry is "real" only if the player is currently
+            # in that pool's tier lists. Stale entries from earlier
+            # pipeline phases (e.g. pre-dedupe iteration) need to be
+            # refreshed against the final pool state and re-marked as
+            # shadows.
+            if player.id in pool_members[pos]:
+                continue
+            # Player is engine-eligible for this pool but has no entry.
+            # Build a shadow valuation against the pool's settled stats.
+            categories = get_categories(pool.role, league_settings)
+            raw_z: dict[str, float] = {}
+            for c in categories:
+                mu = pool.rlp_raw_avg.get(c, 0.0)
+                sd = pool.rostered_tier_stdevs[c]
+                stat = get_player_stat(player, c)
+                delta = (mu - stat) if c in ("ERA", "WHIP") else (stat - mu)
+                raw_z[c] = delta / sd
+            settled = {
+                c: raw_z[c] + pool.z_baseline_shift.get(c, 0.0)
+                for c in categories
+            }
+            dollars = {
+                c: settled[c] * pool.dollars_per_z.get(c, 0.0)
+                for c in categories
+            }
+            total_z = sum(settled.values())
+            total_dollars = sum(dollars.values())
+            tier = _shadow_tier_rank(total_dollars, pool)
+            player.valuation.valuations_by_position[pos] = PositionValuation(
+                position=pos,
+                normalized_z=settled,
+                total_z=total_z,
+                dollar_values=dollars,
+                total_dollars=total_dollars,
+                tier=tier,
+                position_rank=_shadow_position_rank(total_dollars, pool),
+                shadow=True,
+            )
+            shadow_count += 1
+    return shadow_count
+
+
+def _pool_member_dollars(pool: PositionPool) -> list[float]:
+    """Per-pool ``total_dollars`` for every tier member, sorted descending.
+    Prefer per-position valuation (where the swap-pass and finalized
+    pricing live); fall back to top-level."""
+    out: list[float] = []
+    for p in (
+        pool.rostered_players + pool.replacement_players + pool.below_replacement
+    ):
+        pv = p.valuation.valuations_by_position.get(pool.position)
+        out.append(pv.total_dollars if pv else p.valuation.total_dollars)
+    out.sort(reverse=True)
+    return out
+
+
+def _shadow_tier_rank(shadow_dollars: float, pool: PositionPool) -> Tier:
+    """Tier a shadow player by inserting their ``total_dollars`` into
+    the pool's ``$``-ranked member list. The pool's finalized pricing
+    and swap-pass settle on ``$``-rank (not ``z``-rank: per-category
+    ``$/Z`` weights skew the two orderings), so the shadow tier label
+    has to use the same metric — otherwise the same $-value could
+    label ROSTERED here while a higher $-value sits in REPLACEMENT,
+    contradicting the pool's pricing.
+
+    Top ``len(rostered)`` by $ → ROSTERED; next ``len(rlp)`` →
+    REPLACEMENT; else BELOW_REPLACEMENT.
+    """
+    n_rostered = len(pool.rostered_players)
+    n_rlp = len(pool.replacement_players)
+    member_dollars = _pool_member_dollars(pool)
+    rank = sum(1 for d in member_dollars if d > shadow_dollars)
+    if rank < n_rostered:
+        return "ROSTERED"
+    if rank < n_rostered + n_rlp:
+        return "REPLACEMENT"
+    return "BELOW_REPLACEMENT"
+
+
+def _shadow_position_rank(shadow_dollars: float, pool: PositionPool) -> int:
+    """1-indexed $-rank of the shadow within the pool's member list."""
+    return sum(1 for d in _pool_member_dollars(pool) if d > shadow_dollars) + 1
 
 
 def resolve_primary_by_best_dollars(

@@ -77,6 +77,22 @@ def build_player_valuations(
         )
 
         for player in all_players:
+            # Per-pool valuations: every pool the player has an entry in
+            # (real or shadow). Dashboard filtered by position can read
+            # the right key. ``shadow=True`` distinguishes display-only
+            # entries (no budget effect) from real rosterings.
+            by_position: dict[str, dict[str, Any]] = {}
+            for pos, pv in player.valuation.valuations_by_position.items():
+                by_position[pos] = {
+                    "tier": pv.tier,
+                    "total_z": round(pv.total_z, 3),
+                    "total_dollars": round(pv.total_dollars, 2),
+                    "z_scores": {c: round(v, 3) for c, v in pv.normalized_z.items()},
+                    "dollar_values": {
+                        c: round(v, 2) for c, v in pv.dollar_values.items()
+                    },
+                    "shadow": pv.shadow,
+                }
             player_valuations[player.id] = {
                 "primary_position": player.valuation.primary_position,
                 "tier": player.valuation.tier,
@@ -90,6 +106,7 @@ def build_player_valuations(
                     cat: round(val, 2)
                     for cat, val in player.valuation.dollar_values.items()
                 },
+                "by_position": by_position,
             }
 
     return player_valuations

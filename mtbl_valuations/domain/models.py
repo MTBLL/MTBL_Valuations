@@ -72,6 +72,7 @@ class PositionValuation(MTBLBaseModel):
     total_dollars: float = 0.0
     tier: Tier
     position_rank: int
+    shadow: bool = False
 
 
 class Valuation(MTBLBaseModel):

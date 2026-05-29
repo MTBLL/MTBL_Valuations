@@ -50,6 +50,7 @@ from mtbl_valuations.engine.pools import (
 )
 from mtbl_valuations.engine.valuation import (
     distribute_pool_dollars,
+    compute_shadow_valuations,
     resolve_primary_by_best_dollars,
     get_categories,
     get_player_stat,
@@ -597,6 +598,16 @@ def _run_trp_valuation_inner(
     reprimaried = resolve_primary_by_best_dollars(hitter_pools)
     if reprimaried:
         print(f"  Re-primaried {reprimaried} multi-pool hitters by best $")
+
+    # Shadow valuations: for every multi-eligible hitter, fill in the
+    # missing per-pool valuations (engine-eligible pools where they don't
+    # currently have an entry — e.g. a 2B/SS player primary at 2B gets a
+    # shadow SS entry). Display-only: no budget effect, no swap-pass
+    # involvement. The dashboard can show position-context $ when filtered
+    # by pool.
+    shadow_count = compute_shadow_valuations(hitter_pools, league_settings)
+    if shadow_count:
+        print(f"  Computed {shadow_count} shadow per-pool valuations")
 
     print("\n=== TRP Valuation Complete ===")
 
