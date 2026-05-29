@@ -489,10 +489,29 @@ def resolve_primary_by_best_dollars(
         vps = player.valuation.valuations_by_position
         if len(vps) <= 1:
             continue
+        # Candidate selection for the "headline" pool, by priority:
+        #
+        # (1) Real beats shadow. Shadow entries are display-only —
+        #     never headline-worthy when any real entry exists.
+        #
+        # (2) Within real: tier dominates. UTIL ROSTERED beats base
+        #     REPLACEMENT — the player is really rostered at UTIL, his
+        #     auction outcome lives there, his $-value counts toward the
+        #     rostered budget, and the headline must reflect ROSTERED.
+        #
+        # (3) Within real × same tier: prefer base (non-UTIL) pool. UTIL
+        #     is the universal DH slot every hitter is eligible for, so
+        #     UTIL pool $-values often top base-pool $-values within the
+        #     same tier — but the base pool reflects the player's
+        #     fielding identity, which the dashboard should lead with.
+        #
+        # (4) Within all of the above: max $.
         best_pos, best_pv = max(
             vps.items(),
             key=lambda kv: (
+                0 if kv[1].shadow else 1,
                 _TIER_RANK.get(kv[1].tier, 0),
+                1 if kv[0] != "UTIL" else 0,
                 kv[1].total_dollars,
             ),
         )
