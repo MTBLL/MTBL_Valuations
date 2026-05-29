@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from typing import Any
+from typing import Any, Literal
 
 from ..domain.models import (
     HitterStats,
@@ -13,6 +13,7 @@ from ..domain.models import (
     PositionPool,
     PositionValuation,
     Role,
+    Tier,
 )
 
 
@@ -422,7 +423,7 @@ def _pool_member_dollars(pool: PositionPool) -> list[float]:
     return out
 
 
-def _shadow_tier_rank(shadow_dollars: float, pool: PositionPool) -> str:
+def _shadow_tier_rank(shadow_dollars: float, pool: PositionPool) -> Tier:
     """Tier a shadow player by inserting their ``total_dollars`` into
     the pool's ``$``-ranked member list. The pool's finalized pricing
     and swap-pass settle on ``$``-rank (not ``z``-rank: per-category
