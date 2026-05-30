@@ -225,9 +225,24 @@ enrichments:
 ```
 
 The **top-level fields are the player's headline (primary-pool)
-valuation** — the pool that gives them the best `(tier, $)`, preferring a
-real base-pool entry over UTIL and over any shadow (see
-`resolve_primary_by_best_dollars`).
+valuation**, chosen by `resolve_primary_by_best_dollars` with this strict
+priority (see `mtbl_valuations/engine/valuation.py`):
+
+1. **Real beats shadow** — a real entry always outranks a shadow.
+2. **Higher tier wins** — `ROSTERED` > `REPLACEMENT` > `BELOW_REPLACEMENT`.
+   This dominates the base-pool preference below: a player who is
+   **ROSTERED in UTIL but only REPLACEMENT in a base pool headlines as the
+   UTIL rostering** — that's the valuation that actually counts against the
+   league budget, so the headline must reflect it.
+3. **Base pool over UTIL** — *only as a same-tier tiebreaker.* When the
+   best real entries are the same tier (e.g. REPLACEMENT-2B and
+   REPLACEMENT-UTIL), the base pool wins so the headline reflects the
+   player's fielding identity rather than the universal-DH slot.
+4. **Higher `$`** — final tiebreak within tier × real-ness × base-ness.
+
+So base-over-UTIL is a tier-3 tiebreaker, **not** an override of tier:
+downstream consumers should take the headline as-is rather than assume a
+base-pool entry always wins.
 
 The **`by_position` dict carries every engine-eligible pool** the player
 has a valuation in, real or shadow:
