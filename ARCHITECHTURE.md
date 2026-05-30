@@ -215,14 +215,65 @@ enrichments:
   total_dollars: float                // sum of per-cat dollar values
   z_scores: { <cat>: float, ... }     // settled z per category (>= 0 after baseline shift)
   dollar_values: { <cat>: float, ... }
+  by_position: {                      // per-pool valuations (real + shadow)
+    <pos>: {
+      tier, total_z, total_dollars, z_scores, dollar_values,
+      shadow: bool                    // false = real rostering, true = display-only
+    }, ...
+  }
 }
 ```
 
-The top-level fields are the player's *primary-pool* valuation; multi-pool
-players (e.g. a 1B also rostered in UTIL) have their full per-pool history
-in `valuations_by_position` during pipeline execution, but only the
-primary pool surfaces into the merged JSON to avoid ambiguity for
-downstream consumers.
+The **top-level fields are the player's headline (primary-pool)
+valuation**, chosen by `resolve_primary_by_best_dollars` with this strict
+priority (see `mtbl_valuations/engine/valuation.py`):
+
+1. **Real beats shadow** — a real entry always outranks a shadow.
+2. **Higher tier wins** — `ROSTERED` > `REPLACEMENT` > `BELOW_REPLACEMENT`.
+   This dominates the base-pool preference below: a player who is
+   **ROSTERED in UTIL but only REPLACEMENT in a base pool headlines as the
+   UTIL rostering** — that's the valuation that actually counts against the
+   league budget, so the headline must reflect it.
+3. **Base pool over UTIL** — *only as a same-tier tiebreaker.* When the
+   best real entries are the same tier (e.g. REPLACEMENT-2B and
+   REPLACEMENT-UTIL), the base pool wins so the headline reflects the
+   player's fielding identity rather than the universal-DH slot.
+4. **Higher `$`** — final tiebreak within tier × real-ness × base-ness.
+
+So base-over-UTIL is a tier-3 tiebreaker, **not** an override of tier:
+downstream consumers should take the headline as-is rather than assume a
+base-pool entry always wins.
+
+The **`by_position` dict carries every engine-eligible pool** the player
+has a valuation in, real or shadow:
+
+- `shadow: false` — the player is actually a member of that pool's tier
+  lists. Exactly one base pool (and possibly UTIL) is real per player.
+- `shadow: true` — display-only. The player isn't in that pool; the
+  entry answers "what would he be worth *here*" by scoring his stats
+  against that pool's settled archetype / stdev / $/Z, without affecting
+  the pool's budget, cohort, or any swap-pass. UTIL is never shadowed
+  (every hitter already carries a real UTIL entry from the UTIL pool
+  build).
+
+**Reading shadow tiers — positional scarcity, not a bug.** A multi-eligible
+player can read `REPLACEMENT` at his real/primary pool but `ROSTERED` on a
+shadow at a *different* eligible pool (e.g. Sam Antonacci: REPLACEMENT-2B
+real, ROSTERED-3B shadow). This is **honest and intentional**: it means
+*replacement-level where he's assigned (a deep position), but rosterable
+if you slot him at the thin position*. The shadow tier is computed against
+the target pool's actual rostered bar — `ROSTERED` shadow = his value
+out-prices that pool's weakest rostered player. For a fantasy GM the read
+is **"this guy could fill your empty 3B."** Trust the **real/primary** entry
+for his *actual* assignment; read a `ROSTERED` shadow as *could fill this
+thin slot*.
+
+> Cross-pool re-homing (moving such a player to the pool where his shadow
+> rosters) was prototyped and rejected: it's a global assignment problem,
+> and greedy local moves provably oscillate (period-2 limit cycles) because
+> the shadow metric excludes the player from the cohort it's measured
+> against, so it always overstates. The dedupe-by-rank assignment plus
+> honest shadow labels is the resting design.
 
 **2. Position Summary CSV** (`<source>/position_summary.csv`)
 
