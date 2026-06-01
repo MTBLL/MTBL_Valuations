@@ -193,8 +193,14 @@ def _run_trp_valuation_inner(
         )
     elif source == "current":
         # Current-season actuals, gated by the sliding qualified threshold.
+        # Below-threshold batters WITH current-season data are collected for
+        # below-pool shadow valuation (players with no current_season block
+        # are still dropped — nothing to value).
         qualified_pa = compute_qualified_pa(batters_file, budget_config)
-        hitter_players = load_batters_current(batters_file, qualified_pa)
+        hitter_players = load_batters_current(
+            batters_file, qualified_pa,
+            collect_unqualified=unqualified_hitters,
+        )
         from mtbl_valuations.io.qualified import compute_qualified_gs
         qualified_gs = compute_qualified_gs(batters_file, budget_config)
         pitcher_players = load_pitchers_current(
