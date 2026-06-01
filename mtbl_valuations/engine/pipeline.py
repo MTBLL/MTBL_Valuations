@@ -530,8 +530,13 @@ def _run_trp_valuation_inner(
     for _, pool in pitchers.items():
         assign_primary_position_from_pool(pool)
 
-    # Distribute dollars to all pitcher players
-    distribute_pool_dollars(pitchers, store_per_position=False)
+    # Distribute dollars to all pitcher players. store_per_position=True so
+    # the per-pool valuations_by_position[SP|RP] carry the real $ — the
+    # merged JSON's by_position dict reads from there, and consumers that
+    # filter by position would otherwise see $0 for every pitcher (the
+    # PositionValuation default). Pitchers are single-pool, so by_position
+    # [primary] just mirrors the top-level values.
+    distribute_pool_dollars(pitchers, store_per_position=True)
 
     # Pitcher swap-pass: pitcher pools have no multi-eligibility and no
     # cross-pool budget weighting, so each pool converges independently
@@ -893,7 +898,7 @@ def _resolve_pitcher_dollar_misallocations(
                 pp_z_floor=pp_z_floor,
             )
             calc_pool_dollars_per_z({pos: pool})
-            distribute_pool_dollars({pos: pool}, store_per_position=False)
+            distribute_pool_dollars({pos: pool}, store_per_position=True)
 
             cur_score = score()
             if cur_score > best["score"]:
@@ -917,7 +922,7 @@ def _resolve_pitcher_dollar_misallocations(
                 pp_z_floor=pp_z_floor,
             )
             calc_pool_dollars_per_z({pos: pool})
-            distribute_pool_dollars({pos: pool}, store_per_position=False)
+            distribute_pool_dollars({pos: pool}, store_per_position=True)
 
     return total_swaps
 
