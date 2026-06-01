@@ -53,6 +53,7 @@ from mtbl_valuations.engine.valuation import (
     compute_shadow_valuations,
     finalize_tiers_by_dollars,
     resolve_primary_by_best_dollars,
+    valuate_unqualified_players,
     get_categories,
     get_player_stat,
 )
@@ -173,6 +174,12 @@ def _run_trp_valuation_inner(
     budget_config = load_budget_config(budget_config_file)
     league_budget = calc_league_budget(league_settings, budget_config)
 
+    # Players with a projection but below the source's threshold are collected
+    # here (projection sources only) instead of dropped, then shadow-valued
+    # below the qualified pool so they don't export as a flat $0.
+    unqualified_hitters: list[Any] = []
+    unqualified_pitchers: list[Any] = []
+
     if source == "synthetic":
         # Synthetic stats are built from Statcast data; the loader needs the
         # budget config for its blend coefficients and the sliding qualified
@@ -186,8 +193,14 @@ def _run_trp_valuation_inner(
         )
     elif source == "current":
         # Current-season actuals, gated by the sliding qualified threshold.
+        # Below-threshold batters WITH current-season data are collected for
+        # below-pool shadow valuation (players with no current_season block
+        # are still dropped — nothing to value).
         qualified_pa = compute_qualified_pa(batters_file, budget_config)
-        hitter_players = load_batters_current(batters_file, qualified_pa)
+        hitter_players = load_batters_current(
+            batters_file, qualified_pa,
+            collect_unqualified=unqualified_hitters,
+        )
         from mtbl_valuations.io.qualified import compute_qualified_gs
         qualified_gs = compute_qualified_gs(batters_file, budget_config)
         pitcher_players = load_pitchers_current(
@@ -207,10 +220,12 @@ def _run_trp_valuation_inner(
         min_proj_pa = compute_qualified_pa_ros(batters_file, budget_config)
         min_proj_ip = compute_qualified_ip_ros(batters_file, budget_config)
         hitter_players = load_batters(
-            batters_file, source, min_projection_pa=min_proj_pa
+            batters_file, source, min_projection_pa=min_proj_pa,
+            collect_unqualified=unqualified_hitters,
         )
         pitcher_players = load_pitchers(
-            pitchers_file, source, min_projection_ip=min_proj_ip
+            pitchers_file, source, min_projection_ip=min_proj_ip,
+            collect_unqualified=unqualified_pitchers,
         )
     else:
         # mypy narrows `source` to ProjectionSource (preseason / updated)
@@ -223,10 +238,12 @@ def _run_trp_valuation_inner(
         min_proj_pa = float(qualified_cfg.get("min_projection_pa", 0.0))
         min_proj_ip = float(qualified_cfg.get("min_projection_ip", 0.0))
         hitter_players = load_batters(
-            batters_file, source, min_projection_pa=min_proj_pa
+            batters_file, source, min_projection_pa=min_proj_pa,
+            collect_unqualified=unqualified_hitters,
         )
         pitcher_players = load_pitchers(
-            pitchers_file, source, min_projection_ip=min_proj_ip
+            pitchers_file, source, min_projection_ip=min_proj_ip,
+            collect_unqualified=unqualified_pitchers,
         )
 
     ros_slots = league_settings["roster_slots"]
@@ -655,12 +672,36 @@ def _run_trp_valuation_inner(
     if reprimaried:
         print(f"  Re-primaried {reprimaried} multi-pool hitters by best $")
 
+    # Shadow-value the below-threshold players against the now-settled pools,
+    # shifted beneath every real value so they export differentiated instead
+    # of as a flat $0. Hitters against the hitter pools, pitchers against
+    # SP/RP.
+    uq_h_players = [hp.player for hp in unqualified_hitters]
+    uq_p_players = [pp.player for pp in unqualified_pitchers]
+    # Returns ONLY the players that matched a pool and were valued — a
+    # player matching no pool isn't returned, so it never reaches
+    # build_player_valuations and can't re-export as a flat $0.
+    uq_h = valuate_unqualified_players(uq_h_players, hitter_pools, league_settings)
+    uq_p = valuate_unqualified_players(
+        uq_p_players, sp_pool | rp_pool, league_settings
+    )
+    if uq_h or uq_p:
+        print(
+            f"  Shadow-valued {len(uq_h)} unqualified hitters, {len(uq_p)} "
+            f"pitchers (below lowest real $)"
+        )
+
     print("\n=== TRP Valuation Complete ===")
 
     # Per-player valuation payloads, returned so callers can merge across
-    # projection sources into a single enriched JSON.
-    hitter_valuations = build_player_valuations(hitter_pools)
-    pitcher_valuations = build_player_valuations(sp_pool | rp_pool)
+    # projection sources into a single enriched JSON. Unqualified players
+    # aren't pool members, so pass the valued ones as extras.
+    hitter_valuations = build_player_valuations(
+        hitter_pools, extra_players=uq_h
+    )
+    pitcher_valuations = build_player_valuations(
+        sp_pool | rp_pool, extra_players=uq_p
+    )
 
     # Rostered + RLP id sets — the "settled fantasy universe" for this
     # source. ``run_all_valuations`` uses the current source's sets as

@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from ..domain.models import PositionPool
+from ..domain.models import Player, PositionPool
 
 
 def write_position_summary_csv(
@@ -63,51 +63,59 @@ def write_position_summary_csv(
 
 def build_player_valuations(
     all_pools: dict[str, PositionPool],
+    extra_players: list[Player] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Build a lookup of player id -> serialized valuation for a set of pools.
 
     Returns the same per-player valuation payload that gets embedded in the
-    enriched player JSON.
+    enriched player JSON. ``extra_players`` (e.g. unqualified, shadow-valued
+    players that never entered a pool) are serialized too — their
+    ``valuations_by_position`` is already populated.
     """
     player_valuations: dict[str, dict[str, Any]] = {}
 
-    for pool in all_pools.values():
-        all_players = (
-            pool.rostered_players + pool.replacement_players + pool.below_replacement
+    pool_players = [
+        p
+        for pool in all_pools.values()
+        for p in (
+            pool.rostered_players
+            + pool.replacement_players
+            + pool.below_replacement
         )
-
-        for player in all_players:
-            # Per-pool valuations: every pool the player has an entry in
-            # (real or shadow). Dashboard filtered by position can read
-            # the right key. ``shadow=True`` distinguishes display-only
-            # entries (no budget effect) from real rosterings.
-            by_position: dict[str, dict[str, Any]] = {}
-            for pos, pv in player.valuation.valuations_by_position.items():
-                by_position[pos] = {
-                    "tier": pv.tier,
-                    "total_z": round(pv.total_z, 3),
-                    "total_dollars": round(pv.total_dollars, 2),
-                    "z_scores": {c: round(v, 3) for c, v in pv.normalized_z.items()},
-                    "dollar_values": {
-                        c: round(v, 2) for c, v in pv.dollar_values.items()
-                    },
-                    "shadow": pv.shadow,
-                }
-            player_valuations[player.id] = {
-                "primary_position": player.valuation.primary_position,
-                "tier": player.valuation.tier,
-                "total_z": round(player.valuation.total_z, 3),
-                "total_dollars": round(player.valuation.total_dollars, 2),
-                "z_scores": {
-                    cat: round(val, 3)
-                    for cat, val in player.valuation.normalized_z.items()
-                },
+    ]
+    for player in pool_players + list(extra_players or []):
+        # Per-pool valuations: every pool the player has an entry in (real
+        # or shadow). Dashboard filtered by position can read the right key.
+        # ``shadow`` distinguishes display-only entries; ``unqualified``
+        # marks below-threshold players valued strictly under every real one.
+        by_position: dict[str, dict[str, Any]] = {}
+        for pos, pv in player.valuation.valuations_by_position.items():
+            by_position[pos] = {
+                "tier": pv.tier,
+                "total_z": round(pv.total_z, 3),
+                "total_dollars": round(pv.total_dollars, 2),
+                "z_scores": {c: round(v, 3) for c, v in pv.normalized_z.items()},
                 "dollar_values": {
-                    cat: round(val, 2)
-                    for cat, val in player.valuation.dollar_values.items()
+                    c: round(v, 2) for c, v in pv.dollar_values.items()
                 },
-                "by_position": by_position,
+                "shadow": pv.shadow,
+                "unqualified": pv.unqualified,
             }
+        player_valuations[player.id] = {
+            "primary_position": player.valuation.primary_position,
+            "tier": player.valuation.tier,
+            "total_z": round(player.valuation.total_z, 3),
+            "total_dollars": round(player.valuation.total_dollars, 2),
+            "z_scores": {
+                cat: round(val, 3)
+                for cat, val in player.valuation.normalized_z.items()
+            },
+            "dollar_values": {
+                cat: round(val, 2)
+                for cat, val in player.valuation.dollar_values.items()
+            },
+            "by_position": by_position,
+        }
 
     return player_valuations
 

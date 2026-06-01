@@ -51,6 +51,7 @@ def load_batters(
     file_path: Path,
     source: ProjectionSource = "projections",
     min_projection_pa: float = 0.0,
+    collect_unqualified: list[HitterPlayer] | None = None,
 ) -> list[HitterPlayer]:
     """Load and normalize batter data from batters_matched.json.
 
@@ -64,6 +65,10 @@ def load_batters(
             publishes stub lines for partial-season call-ups — small-PA
             projections with elite rate stats that would otherwise flood the
             rostered tier (e.g. a 94-PA SS with .420 OBP getting $23 OBP $).
+        collect_unqualified: if given, players that HAVE a projection but fall
+            below ``min_projection_pa`` are appended here (fully parsed)
+            instead of being silently dropped — so they can be shadow-valued
+            below the qualified pool later rather than exporting as $0.
     """
     with open(file_path) as f:
         data = json.load(f)
@@ -91,17 +96,9 @@ def load_batters(
             )
             continue
 
-        # Stub-projection guard: drop part-time / call-up projections that
-        # would otherwise drag elite rate stats into the rostered tier.
-        if float(proj.get("PA", 0.0)) < min_projection_pa:
-            skipped_low_pa += 1
-            logger.debug(
-                "Low projected PA for batter %s (id_espn=%s, PA=%.1f) — skipping",
-                record.get("name", "<unknown>"),
-                record.get("id_espn", "<unknown>"),
-                float(proj.get("PA", 0.0)),
-            )
-            continue
+        # Stub-projection guard handled AFTER parsing (below): below-threshold
+        # players are either dropped or routed to ``collect_unqualified``.
+        below_threshold = float(proj.get("PA", 0.0)) < min_projection_pa
 
         # Ensure required projection fields exist
         assert all(
@@ -161,6 +158,14 @@ def load_batters(
             valuation=Valuation(),
         )
 
+        if below_threshold:
+            skipped_low_pa += 1
+            if collect_unqualified is not None:
+                collect_unqualified.append(
+                    HitterPlayer(player=player, stats=stats)
+                )
+            continue
+
         hitter_players.append(HitterPlayer(player=player, stats=stats))
 
     if skipped_no_projections:
@@ -182,6 +187,7 @@ def load_pitchers(
     file_path: Path,
     source: ProjectionSource = "projections",
     min_projection_ip: float = 0.0,
+    collect_unqualified: list[PitcherPlayer] | None = None,
 ) -> list[PitcherPlayer]:
     """Load and normalize pitcher data from pitchers_matched.json.
 
@@ -194,6 +200,9 @@ def load_pitchers(
             Filters out call-up / partial-season stub projections that would
             otherwise float into the rostered tier on elite rate stats × tiny
             innings totals.
+        collect_unqualified: if given, pitchers that HAVE a projection but fall
+            below ``min_projection_ip`` are appended here (fully parsed) instead
+            of dropped — for below-pool shadow valuation later.
     """
     with open(file_path) as f:
         data = json.load(f)
@@ -221,16 +230,8 @@ def load_pitchers(
             )
             continue
 
-        # Stub-projection guard for pitchers (mirror of hitter PA gate).
-        if float(proj.get("IP", 0.0)) < min_projection_ip:
-            skipped_low_ip += 1
-            logger.debug(
-                "Low projected IP for pitcher %s (id_espn=%s, IP=%.1f) — skipping",
-                record.get("name", "<unknown>"),
-                record.get("id_espn", "<unknown>"),
-                float(proj.get("IP", 0.0)),
-            )
-            continue
+        # Stub-projection guard handled after parsing (below).
+        below_threshold = float(proj.get("IP", 0.0)) < min_projection_ip
 
         # Determine role from projected usage (GS vs SVHD), not the declared
         # ESPN-eligibility position — see classify_pitcher_role.
@@ -273,6 +274,14 @@ def load_pitchers(
             stats=stats,
             valuation=Valuation(),
         )
+
+        if below_threshold:
+            skipped_low_ip += 1
+            if collect_unqualified is not None:
+                collect_unqualified.append(
+                    PitcherPlayer(player=player, stats=stats)
+                )
+            continue
 
         pitcher_players.append(PitcherPlayer(player=player, stats=stats))
 

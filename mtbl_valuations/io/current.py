@@ -44,7 +44,9 @@ def _num(value: object) -> float:
 
 
 def load_batters_current(
-    file_path: Path, qualified_pa: float
+    file_path: Path,
+    qualified_pa: float,
+    collect_unqualified: list[HitterPlayer] | None = None,
 ) -> list[HitterPlayer]:
     """Load batters valued on current-season actuals.
 
@@ -52,6 +54,10 @@ def load_batters_current(
         file_path: Path to batters_matched.json
         qualified_pa: Sliding minimum PA for a player to be valued
             (see io/qualified.compute_qualified_pa).
+        collect_unqualified: if given, players WITH current-season data but
+            below ``qualified_pa`` are appended here instead of dropped, for
+            below-pool shadow valuation. Players with no current_season block
+            (never played) are still skipped — there's nothing to value.
     """
     with open(file_path) as f:
         data = json.load(f)
@@ -60,9 +66,10 @@ def load_batters_current(
     skipped = 0
     for record in data:
         cs = (record.get("stats", {}).get("espn", {}) or {}).get("current_season")
-        if not cs or _num(cs.get("PA")) < qualified_pa:
+        if not cs:
             skipped += 1
             continue
+        below_threshold = _num(cs.get("PA")) < qualified_pa
 
         # Savant diagnostics are observed data — source-independent — so carry
         # them through here the same as the projection-based loaders do.
@@ -103,6 +110,11 @@ def load_batters_current(
             stats=stats,
             valuation=Valuation(),
         )
+        if below_threshold:
+            skipped += 1
+            if collect_unqualified is not None:
+                collect_unqualified.append(HitterPlayer(player=player, stats=stats))
+            continue
         hitter_players.append(HitterPlayer(player=player, stats=stats))
 
     if skipped:

@@ -376,6 +376,147 @@ def finalize_tiers_by_dollars(pools: dict[str, PositionPool]) -> int:
     return changed
 
 
+def hypothetical_pool_valuation(
+    player: Player,
+    pool: PositionPool,
+    league_settings: dict[str, Any],
+) -> tuple[dict[str, float], dict[str, float], float, float]:
+    """Score ``player`` against ``pool``'s settled archetype/stdev/$/Z without
+    adding them to it — the shadow formula. Returns
+    ``(settled_z, dollar_values, total_z, total_dollars)``. Shared by the
+    shadow pass and the unqualified-player pass."""
+    categories = get_categories(pool.role, league_settings)
+    raw_z: dict[str, float] = {}
+    for c in categories:
+        mu = pool.rlp_raw_avg.get(c, 0.0)
+        sd = pool.rostered_tier_stdevs[c]
+        stat = get_player_stat(player, c)
+        delta = (mu - stat) if c in ("ERA", "WHIP") else (stat - mu)
+        raw_z[c] = delta / sd if sd else 0.0
+    settled = {c: raw_z[c] + pool.z_baseline_shift.get(c, 0.0) for c in categories}
+    dollars = {c: settled[c] * pool.dollars_per_z.get(c, 0.0) for c in categories}
+    return settled, dollars, sum(settled.values()), sum(dollars.values())
+
+
+def _unqualified_target_pools(
+    player: Player, pools: dict[str, PositionPool]
+) -> list[str]:
+    """Which pools an unqualified player is valued against.
+
+    Pitchers follow the SAME assignment as qualified pitchers — their
+    classified ``role`` pool only (SP or RP), never both — so a reliever
+    can't be headlined as an SP just because his ESPN slots list both and
+    the cross-budget $ happened to favor SP. Hitters are valued against
+    every eligible pool present (their fielding positions + UTIL)."""
+    if player.role in ("SP", "RP"):
+        return [player.role] if player.role in pools else []
+    return [pos for pos in pools if pos in player.positions]
+
+
+def valuate_unqualified_players(
+    unqualified: list[Player],
+    pools: dict[str, PositionPool],
+    league_settings: dict[str, Any],
+) -> list[Player]:
+    """Shadow-value players who fell below the projection threshold and never
+    entered a pool, so they export with a differentiated value below every
+    real player instead of a flat $0.
+
+    For each target pool (see ``_unqualified_target_pools``), the player's
+    hypothetical $ is computed against the settled archetype (same formula
+    as shadows). Then the ENTIRE unqualified group is shifted down per-pool
+    so its highest value sits just below that pool's lowest real value —
+    guaranteeing every unqualified player sorts beneath every qualified one,
+    while preserving their internal ordering (a 180-PA platoon bat still
+    ranks above a 1-PA org filler). Every entry is flagged
+    ``shadow=True, unqualified=True`` and tiered BELOW_REPLACEMENT.
+
+    Returns the players that were actually valued (matched ≥1 pool). A
+    player matching no pool is NOT valued and NOT returned — the caller
+    must not serialize it, or it would re-export as a flat $0.
+    """
+    if not unqualified:
+        return []
+
+    eps = 0.01
+
+    # Lowest real (qualified) $ per pool — the floor the unqualified must
+    # stay beneath.
+    pool_min_real: dict[str, float] = {}
+    for pos, pool in pools.items():
+        members = (
+            pool.rostered_players
+            + pool.replacement_players
+            + pool.below_replacement
+        )
+        vals = []
+        for m in members:
+            pv = m.valuation.valuations_by_position.get(pos)
+            vals.append(pv.total_dollars if pv else m.valuation.total_dollars)
+        if vals:
+            pool_min_real[pos] = min(vals)
+
+    # Hypothetical valuation for each (player, target pool).
+    hyp: dict[tuple[str, str], tuple[dict[str, float], dict[str, float], float, float]] = {}
+    pool_max_hyp: dict[str, float] = {}
+    targets: dict[str, list[str]] = {}
+    for player in unqualified:
+        targets[player.id] = [
+            pos
+            for pos in _unqualified_target_pools(player, pools)
+            if pos in pool_min_real
+        ]
+        for pos in targets[player.id]:
+            settled, dollars, total_z, total_dollars = (
+                hypothetical_pool_valuation(player, pools[pos], league_settings)
+            )
+            hyp[(player.id, pos)] = (settled, dollars, total_z, total_dollars)
+            pool_max_hyp[pos] = max(
+                pool_max_hyp.get(pos, float("-inf")), total_dollars
+            )
+
+    # Per-pool downward shift: push the group's top below the pool floor.
+    shift: dict[str, float] = {
+        pos: max(0.0, pool_max_hyp[pos] - (pool_min_real[pos] - eps))
+        for pos in pool_max_hyp
+    }
+
+    valued: list[Player] = []
+    for player in unqualified:
+        best_pos: str | None = None
+        best_val = float("-inf")
+        for pos in targets[player.id]:
+            settled, dollars, total_z, total_dollars = hyp[(player.id, pos)]
+            s = shift.get(pos, 0.0)
+            n = len(dollars) or 1
+            adj_dollars = {c: v - s / n for c, v in dollars.items()}
+            adj_total = total_dollars - s
+            player.valuation.valuations_by_position[pos] = PositionValuation(
+                position=pos,
+                normalized_z=settled,
+                total_z=total_z,
+                dollar_values=adj_dollars,
+                total_dollars=adj_total,
+                tier="BELOW_REPLACEMENT",
+                position_rank=10_000,
+                shadow=True,
+                unqualified=True,
+            )
+            if adj_total > best_val:
+                best_val = adj_total
+                best_pos = pos
+        if best_pos is not None:
+            bpv = player.valuation.valuations_by_position[best_pos]
+            player.valuation.primary_position = best_pos
+            player.valuation.tier = "BELOW_REPLACEMENT"
+            player.valuation.total_dollars = bpv.total_dollars
+            player.valuation.dollar_values = dict(bpv.dollar_values)
+            player.valuation.normalized_z = dict(bpv.normalized_z)
+            player.valuation.total_z = bpv.total_z
+            valued.append(player)
+    return valued
+
+
 def compute_shadow_valuations(
     pools: dict[str, PositionPool],
     league_settings: dict[str, Any],
@@ -436,24 +577,9 @@ def compute_shadow_valuations(
                 continue
             # Player is engine-eligible for this pool but has no entry.
             # Build a shadow valuation against the pool's settled stats.
-            categories = get_categories(pool.role, league_settings)
-            raw_z: dict[str, float] = {}
-            for c in categories:
-                mu = pool.rlp_raw_avg.get(c, 0.0)
-                sd = pool.rostered_tier_stdevs[c]
-                stat = get_player_stat(player, c)
-                delta = (mu - stat) if c in ("ERA", "WHIP") else (stat - mu)
-                raw_z[c] = delta / sd
-            settled = {
-                c: raw_z[c] + pool.z_baseline_shift.get(c, 0.0)
-                for c in categories
-            }
-            dollars = {
-                c: settled[c] * pool.dollars_per_z.get(c, 0.0)
-                for c in categories
-            }
-            total_z = sum(settled.values())
-            total_dollars = sum(dollars.values())
+            settled, dollars, total_z, total_dollars = (
+                hypothetical_pool_valuation(player, pool, league_settings)
+            )
             tier = _shadow_tier_rank(total_dollars, pool)
             player.valuation.valuations_by_position[pos] = PositionValuation(
                 position=pos,

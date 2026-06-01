@@ -73,6 +73,10 @@ class PositionValuation(MTBLBaseModel):
     tier: Tier
     position_rank: int
     shadow: bool = False
+    # True for players below the projection threshold who never entered a
+    # pool: shadow-valued strictly below the lowest real value so they sort
+    # last and are differentiable, instead of exporting as a flat $0.
+    unqualified: bool = False
 
 
 class Valuation(MTBLBaseModel):
