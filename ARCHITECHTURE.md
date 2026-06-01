@@ -224,6 +224,20 @@ enrichments:
 }
 ```
 
+> **Pitcher role vs eligibility — read the right field.** A pitcher's
+> **role** (`SP` / `RP`) is `valuations.<source>.primary_position`,
+> classified by usage (`SVHD >= GS` → RP, else SP — see
+> `classify_pitcher_role`). The record's **top-level** `primary_position`
+> is the upstream **ESPN roster-eligibility** slot, which can differ — e.g.
+> Reid Detmers is RP-eligible on ESPN but pitches as a starter, so his
+> top-level reads `RP` while every `valuations.<source>.primary_position`
+> reads `SP`. Role is genuinely **per source** (≈7% of pitchers are
+> swingmen whose role flips between projection sources and current-season
+> usage — a starter on the IL doing relief rehab reads `SP` in projections
+> but `RP` in `current`), so there is no single top-level role to collapse
+> to. **For role/value, read `valuations.<source>.primary_position`; for
+> "where can I roster him," read the top-level `primary_position`.**
+
 The **top-level fields are the player's headline (primary-pool)
 valuation**, chosen by `resolve_primary_by_best_dollars` with this strict
 priority (see `mtbl_valuations/engine/valuation.py`):
