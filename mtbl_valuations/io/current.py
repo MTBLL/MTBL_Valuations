@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
+from .loader import classify_pitcher_role
 from ..domain.models import (
     HitterPlayer,
     HitterStats,
@@ -168,22 +169,27 @@ def load_pitchers_current(
         if svhd is None:
             svhd = _num(cs.get("SV")) + _num(cs.get("HLD"))
         svhd = _num(svhd)
-        # Bidirectional role classification on GS vs SVHD. SP and RP are
-        # different positions and never z-compared; this keeps each pool
-        # filled with players actually performing that role.
-        role: Literal["SP", "RP"]
-        if primary_pos == "RP" and gs > svhd:
-            role = "SP"
-        elif primary_pos == "SP" and svhd > gs:
-            role = "RP"
-        else:
-            role = primary_pos
+        # Role from actual usage (GS vs SVHD), ignoring the declared
+        # ESPN-eligibility position. SP and RP are different positions and
+        # never z-compared; this keeps each pool filled with players
+        # actually performing that role. See classify_pitcher_role.
+        role = classify_pitcher_role(gs, svhd)
 
         # Sliding GS gate for SPs (analog of qualified_pa). Skips gs=0
         # primary-SPs that can't be per-start-normalized at all, and
         # filters insufficient-sample starters whose ``outs`` is all
         # long-relief without enough starts to be priced as a starter.
-        if role == "SP" and gs < qualified_gs:
+        #
+        # The tie-to-RP rule (svhd >= gs) routes a declared SP into RP on a
+        # pure tie — commonly GS == SVHD == 0, a rehabbing starter with no
+        # relief saves/holds. That's still an insufficient starter sample
+        # with no genuine relief signal, so it must clear the same gate
+        # rather than slip into the RP pool and drag its SVHD/rate
+        # baselines. A declared SP with svhd > gs (real relief conversion)
+        # is NOT caught — that's a genuine reliever.
+        below_starter_gate = gs < qualified_gs
+        tie_into_rp = role == "RP" and primary_pos == "SP" and gs == svhd
+        if below_starter_gate and (role == "SP" or tie_into_rp):
             skipped += 1
             continue
 
