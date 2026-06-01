@@ -398,31 +398,47 @@ def hypothetical_pool_valuation(
     return settled, dollars, sum(settled.values()), sum(dollars.values())
 
 
+def _unqualified_target_pools(
+    player: Player, pools: dict[str, PositionPool]
+) -> list[str]:
+    """Which pools an unqualified player is valued against.
+
+    Pitchers follow the SAME assignment as qualified pitchers — their
+    classified ``role`` pool only (SP or RP), never both — so a reliever
+    can't be headlined as an SP just because his ESPN slots list both and
+    the cross-budget $ happened to favor SP. Hitters are valued against
+    every eligible pool present (their fielding positions + UTIL)."""
+    if player.role in ("SP", "RP"):
+        return [player.role] if player.role in pools else []
+    return [pos for pos in pools if pos in player.positions]
+
+
 def valuate_unqualified_players(
     unqualified: list[Player],
     pools: dict[str, PositionPool],
     league_settings: dict[str, Any],
-) -> int:
+) -> list[Player]:
     """Shadow-value players who fell below the projection threshold and never
     entered a pool, so they export with a differentiated value below every
     real player instead of a flat $0.
 
-    For each eligible pool, the player's hypothetical $ is computed against
-    the settled archetype (same formula as shadows). Then the ENTIRE
-    unqualified group is shifted down per-pool so its highest value sits
-    just below that pool's lowest real value — guaranteeing every
-    unqualified player sorts beneath every qualified one, while preserving
-    their internal ordering (a 180-PA platoon bat still ranks above a
-    1-PA org filler). Every entry is flagged ``shadow=True, unqualified=True``
-    and tiered BELOW_REPLACEMENT.
+    For each target pool (see ``_unqualified_target_pools``), the player's
+    hypothetical $ is computed against the settled archetype (same formula
+    as shadows). Then the ENTIRE unqualified group is shifted down per-pool
+    so its highest value sits just below that pool's lowest real value —
+    guaranteeing every unqualified player sorts beneath every qualified one,
+    while preserving their internal ordering (a 180-PA platoon bat still
+    ranks above a 1-PA org filler). Every entry is flagged
+    ``shadow=True, unqualified=True`` and tiered BELOW_REPLACEMENT.
 
-    Returns the number of unqualified players valued.
+    Returns the players that were actually valued (matched ≥1 pool). A
+    player matching no pool is NOT valued and NOT returned — the caller
+    must not serialize it, or it would re-export as a flat $0.
     """
     if not unqualified:
-        return 0
+        return []
 
     eps = 0.01
-    positions = list(pools.keys())
 
     # Lowest real (qualified) $ per pool — the floor the unqualified must
     # stay beneath.
@@ -440,13 +456,17 @@ def valuate_unqualified_players(
         if vals:
             pool_min_real[pos] = min(vals)
 
-    # Hypothetical valuation for each (player, eligible pool).
+    # Hypothetical valuation for each (player, target pool).
     hyp: dict[tuple[str, str], tuple[dict[str, float], dict[str, float], float, float]] = {}
     pool_max_hyp: dict[str, float] = {}
+    targets: dict[str, list[str]] = {}
     for player in unqualified:
-        for pos in positions:
-            if pos not in player.positions or pos not in pool_min_real:
-                continue
+        targets[player.id] = [
+            pos
+            for pos in _unqualified_target_pools(player, pools)
+            if pos in pool_min_real
+        ]
+        for pos in targets[player.id]:
             settled, dollars, total_z, total_dollars = (
                 hypothetical_pool_valuation(player, pools[pos], league_settings)
             )
@@ -461,15 +481,12 @@ def valuate_unqualified_players(
         for pos in pool_max_hyp
     }
 
-    valued = 0
+    valued: list[Player] = []
     for player in unqualified:
         best_pos: str | None = None
         best_val = float("-inf")
-        for pos in positions:
-            key = (player.id, pos)
-            if key not in hyp:
-                continue
-            settled, dollars, total_z, total_dollars = hyp[key]
+        for pos in targets[player.id]:
+            settled, dollars, total_z, total_dollars = hyp[(player.id, pos)]
             s = shift.get(pos, 0.0)
             n = len(dollars) or 1
             adj_dollars = {c: v - s / n for c, v in dollars.items()}
@@ -496,7 +513,7 @@ def valuate_unqualified_players(
             player.valuation.dollar_values = dict(bpv.dollar_values)
             player.valuation.normalized_z = dict(bpv.normalized_z)
             player.valuation.total_z = bpv.total_z
-            valued += 1
+            valued.append(player)
     return valued
 
 

@@ -612,10 +612,10 @@ def test_valuate_unqualified_shifts_below_min_real_and_differentiates():
 
     strong = uq("uq_strong", 18)   # closer to archetype
     weak = uq("uq_weak", 2)        # far below
-    n = valuate_unqualified_players([strong, weak], {"OF": pool}, {
+    valued = valuate_unqualified_players([strong, weak], {"OF": pool}, {
         "batting_categories": cats,
     })
-    assert n == 2
+    assert {p.id for p in valued} == {"uq_strong", "uq_weak"}
     sv = strong.valuation.valuations_by_position["OF"]
     wv = weak.valuation.valuations_by_position["OF"]
     # Both below the pool's lowest real ($-8), flagged, BELOW tier.
@@ -632,4 +632,65 @@ def test_valuate_unqualified_shifts_below_min_real_and_differentiates():
 
 def test_valuate_unqualified_empty_is_noop():
     pool = PositionPool(position="OF", role="HITTER", roster_slots=1)
-    assert valuate_unqualified_players([], {"OF": pool}, {}) == 0
+    assert valuate_unqualified_players([], {"OF": pool}, {}) == []
+
+
+def test_valuate_unqualified_skips_player_with_no_matching_pool():
+    """A player whose target pool isn't present is NOT valued and NOT
+    returned — so the caller never serializes it as a flat $0."""
+    cats = ["R", "HR", "RBI", "SBN", "OBP", "SLG"]
+    pool = _pool_with_settled(
+        "OF", [5.0, -3.0], {c: 10.0 for c in cats},
+        {c: 5.0 for c in cats}, {c: 1.0 for c in cats},
+    )
+    # 1B-only hitter — no OF/1B... only OF pool exists, player isn't OF.
+    orphan = Player(
+        id="orphan", name="orphan", team="T", positions=["1B"], role="HITTER",
+        stats=HitterStats(pa=80, ab=72, r=5, hr=1, rbi=5, sbn=0,
+                          obp=0.3, slg=0.35),
+    )
+    valued = valuate_unqualified_players(
+        [orphan], {"OF": pool}, {"batting_categories": cats}
+    )
+    assert valued == []
+    assert orphan.valuation.valuations_by_position == {}
+
+
+def test_valuate_unqualified_pitcher_restricted_to_role_pool():
+    """A below-threshold pitcher is valued only in his classified role pool,
+    not both SP and RP, even if eligible_slots lists both."""
+    cats = ["IP", "ERA", "WHIP", "K/9", "SVHD"]
+
+    def ppool(pos):
+        pool = PositionPool(position=pos, role="RP" if pos == "RP" else "SP",
+                            roster_slots=1)
+        pool.rlp_raw_avg = {c: 1.0 for c in cats}
+        pool.rostered_tier_stdevs = {c: 1.0 for c in cats}
+        pool.dollars_per_z = {c: 1.0 for c in cats}
+        pool.z_baseline_shift = {c: 0.0 for c in cats}
+        filler = Player(
+            id=f"f_{pos}", name=f"f_{pos}", team="T", positions=[pos],
+            role="RP" if pos == "RP" else "SP",
+            stats=PitcherStats(outs=180, era=3.5, whip=1.1, k9=9.0, qs=10,
+                               svhd=0),
+        )
+        filler.valuation.valuations_by_position[pos] = PositionValuation(
+            position=pos, normalized_z={}, total_z=0.0, total_dollars=-2.0,
+            tier="BELOW_REPLACEMENT", position_rank=1,
+        )
+        pool.below_replacement = [filler]
+        return pool
+
+    pools = {"SP": ppool("SP"), "RP": ppool("RP")}
+    # Reliever (role RP) but eligible at both SP and RP slots.
+    rp = Player(
+        id="rp", name="rp", team="T", positions=["SP", "RP"], role="RP",
+        stats=PitcherStats(outs=20, era=4.0, whip=1.3, k9=10.0, qs=0, svhd=2),
+    )
+    league = {"pitching_categories": ["OUTS", "ERA", "WHIP", "K/9", "QS", "SVHD"]}
+    valued = valuate_unqualified_players([rp], pools, league)
+    assert valued == [rp]
+    # Only the RP pool entry exists — never SP.
+    assert "RP" in rp.valuation.valuations_by_position
+    assert "SP" not in rp.valuation.valuations_by_position
+    assert rp.valuation.primary_position == "RP"

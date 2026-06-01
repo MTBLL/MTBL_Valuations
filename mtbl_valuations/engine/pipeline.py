@@ -672,26 +672,29 @@ def _run_trp_valuation_inner(
     # SP/RP.
     uq_h_players = [hp.player for hp in unqualified_hitters]
     uq_p_players = [pp.player for pp in unqualified_pitchers]
+    # Returns ONLY the players that matched a pool and were valued — a
+    # player matching no pool isn't returned, so it never reaches
+    # build_player_valuations and can't re-export as a flat $0.
     uq_h = valuate_unqualified_players(uq_h_players, hitter_pools, league_settings)
     uq_p = valuate_unqualified_players(
         uq_p_players, sp_pool | rp_pool, league_settings
     )
     if uq_h or uq_p:
         print(
-            f"  Shadow-valued {uq_h} unqualified hitters, {uq_p} pitchers "
-            f"(below lowest real $)"
+            f"  Shadow-valued {len(uq_h)} unqualified hitters, {len(uq_p)} "
+            f"pitchers (below lowest real $)"
         )
 
     print("\n=== TRP Valuation Complete ===")
 
     # Per-player valuation payloads, returned so callers can merge across
     # projection sources into a single enriched JSON. Unqualified players
-    # aren't pool members, so pass them as extras.
+    # aren't pool members, so pass the valued ones as extras.
     hitter_valuations = build_player_valuations(
-        hitter_pools, extra_players=uq_h_players
+        hitter_pools, extra_players=uq_h
     )
     pitcher_valuations = build_player_valuations(
-        sp_pool | rp_pool, extra_players=uq_p_players
+        sp_pool | rp_pool, extra_players=uq_p
     )
 
     # Rostered + RLP id sets — the "settled fantasy universe" for this
