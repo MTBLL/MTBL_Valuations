@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
+from .loader import classify_pitcher_role
 from ..domain.models import (
     HitterPlayer,
     HitterStats,
@@ -168,16 +169,11 @@ def load_pitchers_current(
         if svhd is None:
             svhd = _num(cs.get("SV")) + _num(cs.get("HLD"))
         svhd = _num(svhd)
-        # Bidirectional role classification on GS vs SVHD. SP and RP are
-        # different positions and never z-compared; this keeps each pool
-        # filled with players actually performing that role.
-        role: Literal["SP", "RP"]
-        if primary_pos == "RP" and gs > svhd:
-            role = "SP"
-        elif primary_pos == "SP" and svhd > gs:
-            role = "RP"
-        else:
-            role = primary_pos
+        # Role from actual usage (GS vs SVHD), ignoring the declared
+        # ESPN-eligibility position. SP and RP are different positions and
+        # never z-compared; this keeps each pool filled with players
+        # actually performing that role. See classify_pitcher_role.
+        role = classify_pitcher_role(gs, svhd)
 
         # Sliding GS gate for SPs (analog of qualified_pa). Skips gs=0
         # primary-SPs that can't be per-start-normalized at all, and
