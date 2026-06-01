@@ -51,6 +51,7 @@ from mtbl_valuations.engine.pools import (
 from mtbl_valuations.engine.valuation import (
     distribute_pool_dollars,
     compute_shadow_valuations,
+    finalize_tiers_by_dollars,
     resolve_primary_by_best_dollars,
     get_categories,
     get_player_stat,
@@ -575,6 +576,19 @@ def _run_trp_valuation_inner(
         all_pools, league_settings["roster_slots"], league_settings["num_teams"]
     )
     validate_rlp_z_scores(all_pools)
+
+    # Final hard tier cut by $ (config replacement_model.final_dollar_sort).
+    # Runs AFTER the validations above — those assert budget conservation
+    # and RLP-z on the z-settled tiers. This pass re-slots each pool by
+    # per-pool $ so no replacement/below player out-values a rostered one,
+    # accepting that rostered $ no longer sums exactly to budget (the cut
+    # is intentionally asympathetic to budget). Applied to all pools.
+    if (budget_config.get("replacement_model") or {}).get(
+        "final_dollar_sort", False
+    ):
+        retiered = finalize_tiers_by_dollars(all_pools)
+        if retiered:
+            print(f"  Final $-sort: re-tiered {retiered} players")
 
     # ========================================================================
     # Phase 10: Output

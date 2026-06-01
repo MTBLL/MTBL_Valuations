@@ -15,6 +15,7 @@ from mtbl_valuations.engine.valuation import (
     calc_z_scores_for_archetype,
     compute_shadow_valuations,
     distribute_pool_dollars,
+    finalize_tiers_by_dollars,
     get_categories,
     get_composite_metric,
     get_player_stat,
@@ -458,3 +459,113 @@ def test_compute_shadow_valuations_skips_util_pool():
     # No shadow for UTIL even though player is eligible — UTIL is skipped.
     assert "UTIL" not in p.valuation.valuations_by_position
     assert count == 0
+
+
+def _ss_member(pid, dollars, tier):
+    """SS-pool member with a per-position $ + tier set (the fields
+    finalize_tiers_by_dollars reads and rewrites)."""
+    p = _make_hitter(pid, {"R": 1.0}, pos="SS")
+    pv = p.valuation.valuations_by_position["SS"]
+    pv.total_dollars = dollars
+    pv.tier = tier
+    p.valuation.total_dollars = dollars
+    p.valuation.tier = tier
+    return p
+
+
+def test_finalize_tiers_by_dollars_resorts_and_relabels():
+    """A RLP player out-valuing a rostered one is promoted; tiers become a
+    clean $-sorted cut: top roster_slots ROSTERED, next len(RLP) REPLACEMENT,
+    rest BELOW."""
+    pool = PositionPool(position="SS", role="HITTER", roster_slots=2)
+    # Tiers deliberately disagree with $-order: a $9 player sits in RLP,
+    # a $3 player sits in ROSTERED.
+    rost_hi = _ss_member("rost_hi", 20.0, "ROSTERED")
+    rost_lo = _ss_member("rost_lo", 3.0, "ROSTERED")   # mis-tiered (too low)
+    rlp_hi = _ss_member("rlp_hi", 9.0, "REPLACEMENT")  # out-values rost_lo
+    rlp_lo = _ss_member("rlp_lo", 1.0, "REPLACEMENT")
+    below = _ss_member("below", -5.0, "BELOW_REPLACEMENT")
+    pool.rostered_players = [rost_hi, rost_lo]
+    pool.replacement_players = [rlp_hi, rlp_lo]
+    pool.below_replacement = [below]
+
+    changed = finalize_tiers_by_dollars({"SS": pool})
+
+    # Top 2 by $ = ROSTERED: rost_hi ($20), rlp_hi ($9).
+    assert {p.id for p in pool.rostered_players} == {"rost_hi", "rlp_hi"}
+    # Next len(RLP)=2 = REPLACEMENT: rost_lo ($3), rlp_lo ($1).
+    assert {p.id for p in pool.replacement_players} == {"rost_lo", "rlp_lo"}
+    assert {p.id for p in pool.below_replacement} == {"below"}
+    # tier labels mirrored onto vbp + top-level
+    assert rlp_hi.valuation.tier == "ROSTERED"
+    assert rlp_hi.valuation.valuations_by_position["SS"].tier == "ROSTERED"
+    assert rost_lo.valuation.tier == "REPLACEMENT"
+    # rlp_hi (REPLACEMENT->ROSTERED) and rost_lo (ROSTERED->REPLACEMENT)
+    # each changed.
+    assert changed == 2
+    # Invariant: no replacement $ exceeds any rostered $.
+    assert max(p.valuation.total_dollars for p in pool.replacement_players) <= min(
+        p.valuation.total_dollars for p in pool.rostered_players
+    )
+
+
+def test_finalize_tiers_by_dollars_noop_when_already_sorted():
+    """Already $-sorted tiers → zero changes (idempotent)."""
+    pool = PositionPool(position="SS", role="HITTER", roster_slots=1)
+    pool.rostered_players = [_ss_member("a", 10.0, "ROSTERED")]
+    pool.replacement_players = [_ss_member("b", 2.0, "REPLACEMENT")]
+    pool.below_replacement = [_ss_member("c", -1.0, "BELOW_REPLACEMENT")]
+    assert finalize_tiers_by_dollars({"SS": pool}) == 0
+
+
+def test_mu_fringe_count_scales_by_dedicated_slots():
+    """_mu_fringe_count = mu_fringe_per_slot * dedicated_slots[pos]; 0 when
+    disabled or pool has no dedicated slots."""
+    from mtbl_valuations.engine.iteration import _mu_fringe_count
+
+    league = {"dedicated_slots": {"SS": 1, "OF": 3, "SP": 3, "RP": 2}}
+    cfg_on = {"replacement_model": {"mu_fringe_per_slot": 2}}
+    cfg_off = {"replacement_model": {"mu_fringe_per_slot": 0}}
+
+    def pool(pos):
+        return PositionPool(position=pos, role="HITTER", roster_slots=1)
+
+    assert _mu_fringe_count(pool("SS"), cfg_on, league) == 2
+    assert _mu_fringe_count(pool("OF"), cfg_on, league) == 6
+    assert _mu_fringe_count(pool("SP"), cfg_on, league) == 6  # 3 dedicated, not P-inflated
+    assert _mu_fringe_count(pool("RP"), cfg_on, league) == 4
+    # disabled
+    assert _mu_fringe_count(pool("SS"), cfg_off, league) == 0
+    # pos with no dedicated slot entry
+    assert _mu_fringe_count(pool("DH"), cfg_on, league) == 0
+
+
+def test_compute_rlp_archetype_blends_bottom_n_rostered():
+    """n_bottom>0 folds the weakest rostered (lowest composite metric) into
+    the baseline, raising mu above the RLP-only mean."""
+    from mtbl_valuations.engine.iteration import _compute_rlp_archetype
+
+    cats = ["R"]
+    cfg = {"rlp_archetype": {"trim_top_pct": 0.0, "sbn_global_mu": None}}
+
+    def hitter(pid, r, wrc):
+        p = Player(
+            id=pid, name=pid, team="T", positions=["SS"], role="HITTER",
+            stats=HitterStats(
+                pa=600, ab=540, r=r, hr=20, rbi=70, sbn=10,
+                obp=0.340, slg=0.450, wrc_plus=wrc,
+            ),
+        )
+        return p
+
+    rlp = [hitter("rlp1", 50, 90), hitter("rlp2", 60, 95)]  # RLP mean R=55
+    # rostered, weakest by wrc_plus = rost_weak (R=80)
+    rostered = [hitter("rost_weak", 80, 100), hitter("rost_strong", 120, 140)]
+
+    base = _compute_rlp_archetype(rlp, cats, cfg)
+    blended = _compute_rlp_archetype(rlp, cats, cfg, rostered=rostered, n_bottom=1)
+
+    assert base["R"] == 55.0  # mean of 50, 60
+    # blends rost_weak (R=80) → mean of 50,60,80 = 63.33 > 55
+    assert blended["R"] > base["R"]
+    assert abs(blended["R"] - (50 + 60 + 80) / 3) < 1e-6

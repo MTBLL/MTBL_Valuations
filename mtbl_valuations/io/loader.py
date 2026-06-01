@@ -316,10 +316,21 @@ def load_league_settings(file_path: Path) -> dict[str, Any]:
     # My league requires 4 GS to have a valid pitching category counts, so we split the P slots into SP and RP
     # TODO: import the league settings minimums from upstream so we can programmatically figure out roster minimums
     roster_slots: dict[str, int] = {}
+    # Dedicated slots per team for each position — the named lineup slot's
+    # own count, EXCLUDING the generic P slot that gets split into SP/RP and
+    # the non-playing BENCH/IL slots. Used by the mu-fringe replacement model
+    # so SP's fringe scales on its dedicated starts (slot 14 = 3) rather than
+    # the P-inflated total (4): a 1-slot pool blends 2 fringe starters, an
+    # n-slot pool blends 2*n.
+    dedicated_slots: dict[str, int] = {}
     for slot_id, count in data["roster_settings"]["lineup_slot_counts"].items():
         slot_name = SLOT_MAPPING.get(int(slot_id))
         if slot_name and count > 0:
             roster_slots[slot_name] = roster_slots.get(slot_name, 0) + count
+            if slot_name not in ("P", "BENCH", "IL"):
+                dedicated_slots[slot_name] = (
+                    dedicated_slots.get(slot_name, 0) + count
+                )
         if slot_name == "P" and count > 0:
             split_p_slots = count // 2
             roster_slots["SP"] = roster_slots.get("SP", 0) + split_p_slots
@@ -340,6 +351,7 @@ def load_league_settings(file_path: Path) -> dict[str, Any]:
     return {
         "num_teams": data["num_teams"],
         "roster_slots": roster_slots,
+        "dedicated_slots": dedicated_slots,
         "auction_budget": data["draft_auction_budget"],
         "acquisition_budget": data["acquisition_budget"],
         "batting_categories": batting_categories,
