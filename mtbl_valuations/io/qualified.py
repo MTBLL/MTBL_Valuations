@@ -26,6 +26,8 @@ QUALIFIED_DEFAULTS: dict[str, float] = {
     "rate_pa_per_game": 1.5,
     "team_games_percentile": 0.80,
     "rate_gs_per_team_game": 0.15,
+    "min_projection_ip": 30,
+    "season_games": 162,
 }
 
 
@@ -74,6 +76,54 @@ def compute_qualified_pa(batters_file: Path, config: dict[str, Any]) -> float:
         batters_data = json.load(f)
     games = team_games_played(batters_data, cfg["team_games_percentile"])
     return cfg["rate_pa_per_game"] * games
+
+
+def _remaining_team_games(
+    batters_data: list[dict[str, Any]], cfg: dict[str, Any]
+) -> int:
+    """Team games LEFT in the season: ``season_games - team_games_played``.
+
+    ``cfg`` is an ALREADY-MERGED qualified dict (the output of
+    ``_qualified_config``), not a top-level budget config — re-merging here
+    would drop the caller's overrides, since a merged dict has no
+    ``qualified`` key and ``_qualified_config`` would fall back to the
+    code-side defaults.
+
+    The rest-of-season (ros) projection covers only the games remaining, so
+    its qualification bar has to shrink as the season runs out — a flat
+    full-season threshold would drop every player in September. Floored at
+    0 (a finished season admits any ros line)."""
+    played = team_games_played(batters_data, cfg["team_games_percentile"])
+    return max(0, int(cfg["season_games"]) - played)
+
+
+def compute_qualified_pa_ros(batters_file: Path, config: dict[str, Any]) -> float:
+    """Sliding ros PA bar: ``rate_pa_per_game * remaining_team_games``.
+
+    Same 1.5-PA-per-team-game rate as the current/synthetic gate, but
+    measured against the games LEFT rather than the games played — because
+    ros projects remaining production. Early season this sits near the
+    full-season bar; by late September it falls toward zero, so a part-time
+    bat still projected to contribute over the final stretch isn't dropped
+    as if it had a full-season-sized projection."""
+    cfg = _qualified_config(config)
+    with open(batters_file) as f:
+        batters_data = json.load(f)
+    return cfg["rate_pa_per_game"] * _remaining_team_games(batters_data, cfg)
+
+
+def compute_qualified_ip_ros(batters_file: Path, config: dict[str, Any]) -> float:
+    """Sliding ros IP bar: the flat ``min_projection_ip`` scaled by the
+    fraction of the season remaining (no per-team-game IP rate exists, so
+    we scale the full-season bar). Falls toward 0 as the season ends."""
+    cfg = _qualified_config(config)
+    with open(batters_file) as f:
+        batters_data = json.load(f)
+    season = int(cfg["season_games"])
+    if season <= 0:
+        return 0.0
+    frac = _remaining_team_games(batters_data, cfg) / season
+    return float(cfg["min_projection_ip"]) * frac
 
 
 def compute_qualified_gs(batters_file: Path, config: dict[str, Any]) -> float:
