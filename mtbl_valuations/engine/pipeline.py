@@ -193,8 +193,28 @@ def _run_trp_valuation_inner(
         pitcher_players = load_pitchers_current(
             pitchers_file, qualified_pa, qualified_gs=qualified_gs
         )
+    elif source == "ros":
+        # Rest-of-season projects only the games LEFT, so the PA/IP bar must
+        # slide down as the season runs out — a flat full-season threshold
+        # (used by preseason/updated below) would drop every player by
+        # September. PA uses the same 1.5-PA-per-team-game rate as the
+        # current/synthetic gate, measured against remaining team games; IP
+        # scales the flat bar by the season fraction remaining.
+        from mtbl_valuations.io.qualified import (
+            compute_qualified_ip_ros,
+            compute_qualified_pa_ros,
+        )
+        min_proj_pa = compute_qualified_pa_ros(batters_file, budget_config)
+        min_proj_ip = compute_qualified_ip_ros(batters_file, budget_config)
+        hitter_players = load_batters(
+            batters_file, source, min_projection_pa=min_proj_pa
+        )
+        pitcher_players = load_pitchers(
+            pitchers_file, source, min_projection_ip=min_proj_ip
+        )
     else:
-        # mypy narrows `source` to ProjectionSource in this branch.
+        # mypy narrows `source` to ProjectionSource (preseason / updated)
+        # here — both are full-season projections, so a flat bar is right.
         # Stub-projection guards: drop call-up / partial-season lines with
         # tiny PA/IP that would otherwise leak elite rate stats into the
         # rostered tier. ``current`` and ``synthetic`` apply their own
