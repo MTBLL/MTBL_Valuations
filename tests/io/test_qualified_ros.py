@@ -44,8 +44,20 @@ def test_remaining_team_games_uses_percentile_of_games_played(tmp_path):
     data = json.loads(
         _batters_file(tmp_path, list(range(10, 101, 10))).read_text()
     )
-    cfg = _cfg(season=162)["qualified"]
-    assert _remaining_team_games(data, cfg) == 162 - 90
+    # NON-default season (not 162) so a dropped override would show.
+    cfg = _cfg(season=120)["qualified"]
+    assert _remaining_team_games(data, cfg) == 120 - 90
+
+
+def test_ros_gates_honor_configured_season_games(tmp_path):
+    """Regression: the remaining-games numerator must use the configured
+    season_games, not the code-side default of 162. A 100-game season
+    after 50 games has 50 left, so the ros PA bar is 1.5*50, not
+    1.5*(162-50)."""
+    bf = _batters_file(tmp_path, [50] * 10)  # 80th pct = 50 played
+    cfg = _cfg(season=100)
+    assert compute_qualified_pa_ros(bf, cfg) == 1.5 * (100 - 50)
+    assert compute_qualified_ip_ros(bf, cfg) == 30.0 * (100 - 50) / 100
 
 
 def test_ros_pa_gate_slides_with_remaining_games(tmp_path):
@@ -69,3 +81,9 @@ def test_ros_gates_floor_at_zero_when_season_over(tmp_path):
     over = _batters_file(tmp_path, [162] * 10)
     assert compute_qualified_pa_ros(over, _cfg()) == 0.0
     assert compute_qualified_ip_ros(over, _cfg()) == 0.0
+
+
+def test_ros_ip_gate_guards_zero_season_games(tmp_path):
+    """season_games=0 (degenerate config) → IP gate 0.0, no divide-by-zero."""
+    bf = _batters_file(tmp_path, [10] * 10)
+    assert compute_qualified_ip_ros(bf, _cfg(season=0)) == 0.0

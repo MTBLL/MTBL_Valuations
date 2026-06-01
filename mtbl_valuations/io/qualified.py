@@ -79,15 +79,20 @@ def compute_qualified_pa(batters_file: Path, config: dict[str, Any]) -> float:
 
 
 def _remaining_team_games(
-    batters_data: list[dict[str, Any]], config: dict[str, Any]
+    batters_data: list[dict[str, Any]], cfg: dict[str, Any]
 ) -> int:
     """Team games LEFT in the season: ``season_games - team_games_played``.
+
+    ``cfg`` is an ALREADY-MERGED qualified dict (the output of
+    ``_qualified_config``), not a top-level budget config — re-merging here
+    would drop the caller's overrides, since a merged dict has no
+    ``qualified`` key and ``_qualified_config`` would fall back to the
+    code-side defaults.
 
     The rest-of-season (ros) projection covers only the games remaining, so
     its qualification bar has to shrink as the season runs out — a flat
     full-season threshold would drop every player in September. Floored at
     0 (a finished season admits any ros line)."""
-    cfg = _qualified_config(config)
     played = team_games_played(batters_data, cfg["team_games_percentile"])
     return max(0, int(cfg["season_games"]) - played)
 
