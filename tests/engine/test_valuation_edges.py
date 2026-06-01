@@ -518,6 +518,12 @@ def test_finalize_tiers_by_dollars_noop_when_already_sorted():
     assert finalize_tiers_by_dollars({"SS": pool}) == 0
 
 
+def test_finalize_tiers_by_dollars_skips_empty_pool():
+    """An empty pool is skipped without error."""
+    empty = PositionPool(position="SS", role="HITTER", roster_slots=1)
+    assert finalize_tiers_by_dollars({"SS": empty}) == 0
+
+
 def test_mu_fringe_count_scales_by_dedicated_slots():
     """_mu_fringe_count = mu_fringe_per_slot * dedicated_slots[pos]; 0 when
     disabled or pool has no dedicated slots."""

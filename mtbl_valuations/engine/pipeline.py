@@ -589,6 +589,12 @@ def _run_trp_valuation_inner(
         retiered = finalize_tiers_by_dollars(all_pools)
         if retiered:
             print(f"  Final $-sort: re-tiered {retiered} players")
+        # The per-pool $-sort can promote a UTIL-rostered hitter into their
+        # base pool too (double-rostering). Keep base, vacate UTIL, next
+        # man up. Runs only when the sort did — it's the sole cause.
+        vacated = _reconcile_final_sort_util_dupes(hitter_pools)
+        if vacated:
+            print(f"  Final $-sort: reconciled {vacated} UTIL double-rosterings")
 
     # ========================================================================
     # Phase 10: Output
@@ -1017,6 +1023,74 @@ def _reconcile_pool_membership(
     for pos, pool in hitter_pools.items():
         for p in pool.rostered_players:
             p.valuation.primary_position = pos
+
+
+def _reconcile_final_sort_util_dupes(
+    hitter_pools: dict[str, PositionPool],
+) -> int:
+    """Resolve base/UTIL double-rosterings created by ``final_dollar_sort``.
+
+    The final $-sort re-cuts every pool independently, so a player already
+    ROSTERED in UTIL can be promoted to ROSTERED in their base pool by
+    dollars too — occupying two roster slots. The earlier
+    ``_reconcile_pool_membership`` ran inside the swap-pass, before the
+    sort, so it can't catch this.
+
+    Rule (per the auction): keep the BASE rostering (fielding identity),
+    remove the player from UTIL entirely (their UTIL valuation becomes a
+    shadow), and promote UTIL's best non-rostered player — next man up — to
+    keep UTIL's rostered count whole. Removing rather than demoting matters:
+    the dup was UTIL's top-$ rostered, so demoting him to UTIL-RLP would
+    leave him out-valuing the promoted starter and re-break the sort.
+    Promoting the best RLP keeps rostered-min ≥ RLP-max for free. A promoted
+    player can himself be base-rostered, so repeat until no overlap remains.
+
+    Returns the number of UTIL rosterings vacated.
+    """
+    util = hitter_pools.get("UTIL")
+    if util is None:
+        return 0
+
+    def util_dollars(p: Player) -> float:
+        pv = p.valuation.valuations_by_position.get("UTIL")
+        return pv.total_dollars if pv else 0.0
+
+    moved = 0
+    for _ in range(500):
+        base_rostered = {
+            p.id
+            for pos, pool in hitter_pools.items()
+            if pos != "UTIL"
+            for p in pool.rostered_players
+        }
+        dup = next(
+            (p for p in util.rostered_players if p.id in base_rostered), None
+        )
+        if dup is None:
+            break
+        # Vacate the UTIL rostering; the UTIL entry is now display-only.
+        util.rostered_players.remove(dup)
+        dup_pv = dup.valuation.valuations_by_position.get("UTIL")
+        if dup_pv is not None:
+            dup_pv.shadow = True
+        # Promote UTIL's best non-rostered (next man up).
+        candidates = util.replacement_players + util.below_replacement
+        if candidates:
+            best = max(candidates, key=util_dollars)
+            if best in util.replacement_players:
+                util.replacement_players.remove(best)
+            else:
+                util.below_replacement.remove(best)
+            util.rostered_players.append(best)
+            best.valuation.primary_position = "UTIL"
+            best_pv = best.valuation.valuations_by_position.get("UTIL")
+            if best_pv is not None:
+                best_pv.tier = "ROSTERED"
+                best_pv.shadow = False
+            if best.valuation.primary_position == "UTIL":
+                best.valuation.tier = "ROSTERED"
+        moved += 1
+    return moved
 
 
 def run_all_valuations(
