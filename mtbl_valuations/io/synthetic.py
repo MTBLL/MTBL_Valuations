@@ -36,6 +36,7 @@ from bisect import bisect_left
 from pathlib import Path
 from typing import Any, Literal
 
+from .loader import classify_pitcher_role
 from ..domain.models import (
     HitterPlayer,
     HitterStats,
@@ -353,12 +354,9 @@ def load_pitchers_synthetic(
         # no Statcast proxy exists for pure role/usage categories.
         outs = proj.get("OUTS", float(proj.get("IP", 0.0)) * 3)
         projected_gs = float(proj.get("GS", 0))
-        svhd = proj.get("SVHD", proj.get("SV", 0) + proj.get("HLD", 0))
-        role: Literal["SP", "RP"]
-        if primary_pos == "RP" and projected_gs > svhd:
-            role = "SP"
-        else:
-            role = primary_pos
+        svhd = float(proj.get("SVHD", proj.get("SV", 0) + proj.get("HLD", 0)))
+        # Role from projected usage (GS vs SVHD), not declared position.
+        role = classify_pitcher_role(projected_gs, svhd)
 
         # ERA: Savant xERA directly (already on ERA scale).
         era_syn = float(xera)

@@ -33,6 +33,20 @@ ValuationSource = Literal[
 ]
 
 
+def classify_pitcher_role(gs: float, svhd: float) -> Literal["SP", "RP"]:
+    """Pitcher role from usage, ignoring the declared (ESPN-eligibility)
+    position entirely.
+
+    Hard rule: ``SVHD >= GS`` → ``RP``, else ``SP``. A tie (e.g. a brand-new
+    arm with no GS and no SVHD) resolves to RP. SP and RP pools are never
+    z-compared, so role must reflect what the pitcher actually *does*
+    (starts vs holds/saves), not the slot the platform lists him in — a
+    swingman with more starts than save-holds is a starter for valuation
+    even if rostered as an RP, and vice versa.
+    """
+    return "RP" if svhd >= gs else "SP"
+
+
 def load_batters(
     file_path: Path,
     source: ProjectionSource = "projections",
@@ -218,21 +232,16 @@ def load_pitchers(
             )
             continue
 
-        # Determine role from primary_position
+        # Determine role from projected usage (GS vs SVHD), not the declared
+        # ESPN-eligibility position — see classify_pitcher_role.
         primary_pos = record.get("primary_position", "")
         assert primary_pos in ["SP", "RP"]
 
         # Ensure required projection fields exist
         assert all(key in proj for key in ["GS", "IP", "ERA", "WHIP", "K/9", "FIP"])
-        # Use IP projection to override RP classification for swingmen
-        # RPs with >100 IP projection are likely swingmen/long relievers who should be SP
         projected_gs = float(proj.get("GS", 0))
-        svhd = proj.get("SVHD", proj.get("SV", 0) + proj.get("HLD", 0))
-        role: Literal["SP", "RP"]
-        if primary_pos == "RP" and projected_gs > svhd:
-            role = "SP"
-        else:
-            role = primary_pos
+        svhd = float(proj.get("SVHD", proj.get("SV", 0) + proj.get("HLD", 0)))
+        role = classify_pitcher_role(projected_gs, svhd)
 
         # Convert IP to outs
         outs = proj.get("OUTS", float(proj["IP"]) * 3)
