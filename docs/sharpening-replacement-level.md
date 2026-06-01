@@ -92,27 +92,6 @@ that ports cleanly to every pool regardless of size. League-wide invariant
 violations went from ~6 per source to **0**, and the handful of
 *negative-dollar rostered* players disappeared.
 
-### The double-rostering it opened — and how we closed it
-
-Sorting each pool *independently* by dollars created one subtle hole. A
-hitter eligible at both a base position and UTIL (every hitter is
-UTIL-eligible) could now be promoted to ROSTERED **in both pools at once**
-— a 1B who's also UTIL-rostered, picked up by the 1B sort on dollars while
-still sitting in UTIL. Suddenly the same player occupies two roster slots.
-The engine's existing duplicate cleanup runs earlier, inside the
-convergence pass, so it never sees a duplicate the *final* sort creates.
-
-The fix encodes a real auction rule: **a player has one fielding home.**
-Keep the base rostering (that's his identity — a first baseman, not a
-generic DH), vacate his UTIL slot, and promote UTIL's best available
-bench bat — *next man up*. The detail that matters: we **remove** him from
-UTIL rather than demote him to UTIL's replacement tier. He was UTIL's
-highest-paid rostered player, so demoting him would leave him out-earning
-the starter who took his place — re-breaking the very invariant the sort
-just established. Pulling him out cleanly and promoting the top bench bat
-keeps "rostered ≥ replacement" intact for free. The pass repeats until no
-player is double-rostered anywhere.
-
 ---
 
 ## Lever 3 — widen the scale with the RLP tier (REJECTED)
@@ -173,42 +152,3 @@ gravestone, so the idea doesn't get exhumed.
 Validated across SS (1-slot), OF (3-slot), and SP (3-slot dedicated): the
 same studs-up / replacement-toward-$0 / clean-boundary shape every time, in
 both projection and current-season sources.
-
-## Why this is the most accurate version to date
-
-Three threads of work converge here, and it's worth saying plainly why the
-engine is now closer to *true* value than any prior version:
-
-1. **Replacement level is honest *and* sharp.** "Chasing a Ghost" got it
-   honest — replacement players stopped pricing at a phantom $12. This
-   rework got it sharp — they price near $0, and the curve above them
-   reflects real scarcity (a shortstop falls off a cliff after eleven; an
-   outfielder glides down a long bench). The fringe blended into the
-   baseline scales with how many *starting jobs* a position has, not how
-   deep its waiver pile runs, so a position's replacement line means the
-   same thing whether it's one slot or four.
-
-2. **The tiers cannot lie anymore.** For the first time, the exported
-   tiers are a strict dollar ordering: no replacement player out-earns a
-   rostered one, no rostered player prices negative, and no player holds
-   two roster slots. Those were all *possible* before — rare, but possible,
-   and when they happened they quietly contradicted the dollar values
-   sitting right next to them. The final $-sort plus the double-rostering
-   reconcile close that gap by construction, not by luck.
-
-3. **The roles and the data feeding it are right.** Pitchers are classified
-   by what they actually do (starts vs. saves-and-holds), uniformly across
-   every projection source; insufficient-sample arms are gated out instead
-   of polluting a pool; and the per-position values export cleanly for both
-   hitters and pitchers. Garbage in, garbage out — and a lot of upstream
-   garbage got cleaned out along the way.
-
-The one thing we *gave up* to get here is exact budget conservation: the
-final sort drifts the rostered total by roughly $8–13 against a $2,805
-league. That's a deliberate trade. Budgets are still cut on a conserved,
-z-settled allocation; the final ordering then prioritizes a truth the
-auction cares about more than the accounting — **you never pay a
-replacement-level price for a rostered player, and you never roster the
-same player twice.** For a tool whose entire job is to tell you what a
-player is worth, getting the *ordering* unimpeachable was worth a few
-dollars of slack in the sum.
