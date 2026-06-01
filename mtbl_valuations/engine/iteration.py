@@ -12,6 +12,7 @@ from mtbl_valuations.engine.iteration_logger import current_logger, current_phas
 from mtbl_valuations.engine.pools import rebuild_replacement_tier_on_z
 from mtbl_valuations.engine.valuation import (
     get_categories,
+    get_composite_metric,
     get_player_stat,
     is_inverted,
 )
@@ -59,18 +60,20 @@ def iterate_to_convergence_global(
             below = [p for p in pool.below_replacement if hasattr(p, "stats")]
             all_pool_players = rostered + rlp_tier + below
 
-            # Step 1: rostered-tier mean & stdev (scale)
+            # Step 1: rostered-tier stdev (the z scale)
             pool.rostered_tier_stdevs = {}
             for cat in categories:
                 vals = [get_player_stat(p, cat) for p in rostered]
                 pool.rostered_tier_stdevs[cat] = _safe_stdev(vals)
 
-            # Step 2: replacement archetype baseline (trimmed RLP mean)
+            # Step 2: replacement archetype baseline (trimmed RLP mean,
+            # optionally blended with the weakest rostered)
             if composite_rlp_archetype is not None:
                 pool.rlp_raw_avg = composite_rlp_archetype
             else:
                 pool.rlp_raw_avg = _compute_rlp_archetype(
-                    rlp_tier, categories, budget_config
+                    rlp_tier, categories, budget_config, rostered=rostered,
+                    n_bottom=_mu_fringe_count(pool, budget_config, league_settings),
                 )
 
             # Step 3a: compute RAW above-replacement z per player (in-memory)
@@ -257,18 +260,20 @@ def iterate_to_convergence_per_position(
             below = [p for p in pool.below_replacement if hasattr(p, "stats")]
             all_pool_players = rostered + rlp_tier + below
 
-            # Step 1: rostered-tier mean & stdev (scale)
+            # Step 1: rostered-tier stdev (the z scale)
             pool.rostered_tier_stdevs = {}
             for cat in categories:
                 vals = [get_player_stat(p, cat) for p in rostered]
                 pool.rostered_tier_stdevs[cat] = _safe_stdev(vals)
 
-            # Step 2: replacement archetype baseline (trimmed RLP mean)
+            # Step 2: replacement archetype baseline (trimmed RLP mean,
+            # optionally blended with the weakest rostered)
             if composite_rlp_archetype is not None:
                 pool.rlp_raw_avg = composite_rlp_archetype
             else:
                 pool.rlp_raw_avg = _compute_rlp_archetype(
-                    rlp_tier, categories, budget_config
+                    rlp_tier, categories, budget_config, rostered=rostered,
+                    n_bottom=_mu_fringe_count(pool, budget_config, league_settings),
                 )
 
             # Step 3a: compute RAW above-replacement z per player (in-memory)
@@ -647,12 +652,39 @@ def _safe_stdev(nums: Iterable[float]) -> float:
     return statistics.stdev(nums) if len(nums) >= 2 else 0.0
 
 
+def _mu_fringe_count(
+    pool: PositionPool,
+    budget_config: dict[str, Any],
+    league_settings: dict[str, Any],
+) -> int:
+    """How many of the weakest rostered players to fold into the archetype
+    baseline (the ``mu``-raise lever).
+
+    ``replacement_model.mu_fringe_per_slot`` × the pool's DEDICATED slots
+    per team. The "2 fringe per single-slot group" intuition, scaled
+    linearly by group size: a 1-slot pool (SS) blends 2, a 3-slot pool
+    (OF, dedicated-SP) blends 6, a 2-slot pool (dedicated-RP) blends 4.
+    Dedicated slots exclude the shared P slot, so SP scales on its 3 real
+    starts, not the P-inflated 4. Returns 0 when disabled (default) or for
+    a pool with no dedicated slots (e.g. UTIL is handled by its base pools).
+    """
+    rm = budget_config.get("replacement_model") or {}
+    per_slot = float(rm.get("mu_fringe_per_slot", 0.0))
+    if per_slot <= 0.0:
+        return 0
+    ded = (league_settings.get("dedicated_slots") or {}).get(pool.position, 0)
+    return int(per_slot * ded)
+
+
 def _compute_rlp_archetype(
     rlp_tier: list[Player],
     categories: list[str],
     budget_config: dict[str, Any],
+    rostered: list[Player] | None = None,
+    n_bottom: int = 0,
 ) -> dict[str, float]:
-    """Per-category replacement archetype — the trimmed mean of the RLP tier.
+    """Per-category replacement archetype — the trimmed mean of the RLP tier
+    (optionally blended with the weakest rostered players).
 
     REPLACES the old per-category phantom baseline (the worst rostered
     player in EACH category — a composite worse than any real player, which
@@ -666,6 +698,17 @@ def _compute_rlp_archetype(
     to a flat league-wide baseline (most legit bats steal ~0-1 a season);
     positional SBN scarcity is still carried by the budget allocation.
 
+    ``n_bottom`` (default 0; computed by ``_mu_fringe_count`` from
+    ``replacement_model.mu_fringe_per_slot`` × dedicated slots) raises the
+    baseline by folding the weakest ``n_bottom`` rostered players (lowest
+    ``get_composite_metric`` — wRC+/-FIP, a stable raw rank with no
+    chicken-and-egg on the z being computed) into the averaged set. This
+    lifts replacement level from "average bench" toward "bench blended with
+    the marginal starters", compressing the lowest rosterable and RLP
+    values toward $0 and sharpening the studs-vs-scrubs curve. Watch the
+    thin-cell guard: pushing the baseline too high can drive Σz→0 in thin
+    pools and explode $/Z.
+
     Config (budget_config["rlp_archetype"]):
       trim_top_pct  : fraction of the RLP tier's top contributors to drop
       sbn_global_mu : flat SBN baseline, or null to use the trimmed mean
@@ -674,12 +717,17 @@ def _compute_rlp_archetype(
     trim_top = float(cfg.get("trim_top_pct", 0.0))
     sbn_mu = cfg.get("sbn_global_mu")
 
+    baseline_players = list(rlp_tier)
+    if n_bottom > 0 and rostered:
+        weakest = sorted(rostered, key=get_composite_metric)[:n_bottom]
+        baseline_players = baseline_players + weakest
+
     archetype: dict[str, float] = {}
     for cat in categories:
         if cat == "SBN" and sbn_mu is not None:
             archetype[cat] = float(sbn_mu)
             continue
-        vals = sorted(get_player_stat(p, cat) for p in rlp_tier)
+        vals = sorted(get_player_stat(p, cat) for p in baseline_players)
         if not vals:
             archetype[cat] = 0.0
             continue
@@ -913,7 +961,10 @@ def recompute_pool_z_in_place(
     pool.rostered_tier_stdevs = {
         c: _safe_stdev([get_player_stat(p, c) for p in rostered]) for c in categories
     }
-    pool.rlp_raw_avg = _compute_rlp_archetype(rlp_tier, categories, budget_config)
+    pool.rlp_raw_avg = _compute_rlp_archetype(
+        rlp_tier, categories, budget_config, rostered=rostered,
+        n_bottom=_mu_fringe_count(pool, budget_config, league_settings),
+    )
 
     raw_z: dict[str, dict[str, float]] = {}
     for p in all_pool_players:

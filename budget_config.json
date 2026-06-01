@@ -30,6 +30,10 @@
     "sbn_global_mu": 1.0,
     "thin_cell_k": 1.0
   },
+  "replacement_model": {
+    "mu_fringe_per_slot": 2,
+    "final_dollar_sort": true
+  },
   "max_iterations": 5,
   "convergence_threshold": 0,
   "bench_reserve_per_team": 5,

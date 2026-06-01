@@ -142,6 +142,65 @@ class TestPipeline:
                 f"{src}: rostered $ {allocated:.2f} != budget {league_total}"
             )
 
+    def test_final_dollar_sort_no_dual_rostering_or_inversions(
+        self, batters_file, pitchers_file, league_file, budget_config_file,
+        tmp_path
+    ):
+        """With replacement_model (mu_fringe + final $-sort) enabled, the
+        exported pools must have NO hitter rostered in two pools and NO
+        replacement player out-valuing a rostered one. Budget conservation
+        is intentionally NOT asserted — the final sort drifts it."""
+        import json as _json
+        cfg = _json.loads(Path(budget_config_file).read_text())
+        cfg["replacement_model"] = {
+            "mu_fringe_per_slot": 2,
+            "final_dollar_sort": True,
+        }
+        cfg_path = tmp_path / "cfg_on.json"
+        cfg_path.write_text(_json.dumps(cfg))
+
+        run_all_valuations(
+            batters_file, pitchers_file, league_file, cfg_path, tmp_path
+        )
+        hitters = json.loads((tmp_path / "hitters.json").read_text())
+        pitchers = json.loads((tmp_path / "pitchers.json").read_text())
+        sources = ("preseason", "updated", "ros", "synthetic", "current")
+
+        for src in sources:
+            # No hitter rostered (real, non-shadow) in two pools.
+            for rec in hitters:
+                v = rec.get("valuations", {}).get(src)
+                if not v:
+                    continue
+                rostered_pools = [
+                    pos
+                    for pos, pv in (v.get("by_position") or {}).items()
+                    if pv.get("tier") == "ROSTERED" and not pv.get("shadow")
+                ]
+                assert len(rostered_pools) <= 1, (
+                    f"{rec['name']} {src}: dual-rostered {rostered_pools}"
+                )
+
+            # No replacement player out-values a rostered one in its pool.
+            by_r: dict[str, list[float]] = {}
+            by_l: dict[str, list[float]] = {}
+            for rec in hitters + pitchers:
+                v = rec.get("valuations", {}).get(src)
+                if not v:
+                    continue
+                pos = v.get("primary_position")
+                d = v.get("total_dollars", 0.0)
+                if v.get("tier") == "ROSTERED":
+                    by_r.setdefault(pos, []).append(d)
+                elif v.get("tier") == "REPLACEMENT":
+                    by_l.setdefault(pos, []).append(d)
+            for pos, rost in by_r.items():
+                if rost and by_l.get(pos):
+                    assert max(by_l[pos]) <= min(rost) + 1e-6, (
+                        f"{src} {pos}: RLP ${max(by_l[pos]):.2f} > "
+                        f"rostered-min ${min(rost):.2f}"
+                    )
+
 
 class TestSwapPassUnit:
     """Direct unit tests on ``_resolve_hitter_dollar_misallocations``."""
@@ -265,6 +324,123 @@ class TestSwapPassUnit:
         # primary_position re-derived from actual rostered membership.
         assert dual.valuation.primary_position == "UTIL"
         assert of_filler.valuation.primary_position == "OF"
+
+    def test_reconcile_final_sort_util_dupes_keeps_base_promotes_next(self):
+        """After the final $-sort, a hitter rostered in BOTH a base pool and
+        UTIL is kept in the base pool, removed from UTIL (entry → shadow),
+        and UTIL promotes its best non-rostered (next man up)."""
+        from mtbl_valuations.domain.models import (
+            HitterStats,
+            Player,
+            PositionPool,
+            PositionValuation,
+            Valuation,
+        )
+        from mtbl_valuations.engine.pipeline import (
+            _reconcile_final_sort_util_dupes,
+        )
+
+        def _mk(pid, base_pos, base_d, util_d):
+            v = Valuation()
+            v.primary_position = base_pos
+            vbp = {
+                "UTIL": PositionValuation(
+                    position="UTIL", normalized_z={}, total_z=0.0,
+                    total_dollars=util_d, tier="ROSTERED", position_rank=1,
+                )
+            }
+            if base_pos:
+                vbp[base_pos] = PositionValuation(
+                    position=base_pos, normalized_z={}, total_z=0.0,
+                    total_dollars=base_d, tier="ROSTERED", position_rank=1,
+                )
+            v.valuations_by_position = vbp
+            return Player(
+                id=pid, name=pid, team="T",
+                positions=[p for p in (base_pos, "UTIL") if p], role="HITTER",
+                stats=HitterStats(pa=600, ab=540, r=80, hr=20, rbi=70,
+                                  sbn=10, obp=0.350, slg=0.450),
+                valuation=v,
+            )
+
+        # dual is rostered at 1B AND UTIL (the post-sort double-rostering).
+        dual = _mk("dual", "1B", base_d=15.0, util_d=20.0)
+        b1_filler = _mk("b1", "1B", base_d=30.0, util_d=1.0)
+        # UTIL bench: best non-rostered = next man up.
+        util_next = _mk("util_next", "", base_d=0.0, util_d=12.0)
+        util_low = _mk("util_low", "", base_d=0.0, util_d=4.0)
+        util_next.valuation.valuations_by_position["UTIL"].tier = "REPLACEMENT"
+        util_low.valuation.valuations_by_position["UTIL"].tier = "REPLACEMENT"
+
+        b1 = PositionPool(position="1B", role="HITTER", roster_slots=2)
+        b1.rostered_players = [dual, b1_filler]
+        util = PositionPool(position="UTIL", role="HITTER", roster_slots=1)
+        util.rostered_players = [dual]
+        util.replacement_players = [util_next, util_low]
+
+        moved = _reconcile_final_sort_util_dupes({"1B": b1, "UTIL": util})
+
+        assert moved == 1
+        # dual kept at 1B, gone from UTIL roster, UTIL entry now shadow.
+        assert dual in b1.rostered_players
+        assert dual not in util.rostered_players
+        assert dual.valuation.valuations_by_position["UTIL"].shadow is True
+        # UTIL backfilled with its best non-rostered (next man up = $12).
+        assert util_next in util.rostered_players
+        assert util_low not in util.rostered_players
+        assert len(util.rostered_players) == 1
+        assert util_next.valuation.valuations_by_position["UTIL"].tier == "ROSTERED"
+
+    def test_reconcile_final_sort_util_dupes_noop_without_util(self):
+        from mtbl_valuations.domain.models import PositionPool
+        from mtbl_valuations.engine.pipeline import (
+            _reconcile_final_sort_util_dupes,
+        )
+        pool = PositionPool(position="1B", role="HITTER", roster_slots=1)
+        assert _reconcile_final_sort_util_dupes({"1B": pool}) == 0
+
+    def test_reconcile_final_sort_util_dupes_promotes_from_below(self):
+        """When UTIL has no replacement bench, next-man-up comes from
+        below_replacement."""
+        from mtbl_valuations.domain.models import (
+            HitterStats, Player, PositionPool, PositionValuation, Valuation,
+        )
+        from mtbl_valuations.engine.pipeline import (
+            _reconcile_final_sort_util_dupes,
+        )
+
+        def _mk(pid, base_pos, base_d, util_d, util_tier="ROSTERED"):
+            v = Valuation()
+            v.primary_position = base_pos or "UTIL"
+            vbp = {"UTIL": PositionValuation(
+                position="UTIL", normalized_z={}, total_z=0.0,
+                total_dollars=util_d, tier=util_tier, position_rank=1)}
+            if base_pos:
+                vbp[base_pos] = PositionValuation(
+                    position=base_pos, normalized_z={}, total_z=0.0,
+                    total_dollars=base_d, tier="ROSTERED", position_rank=1)
+            v.valuations_by_position = vbp
+            return Player(
+                id=pid, name=pid, team="T",
+                positions=[p for p in (base_pos, "UTIL") if p], role="HITTER",
+                stats=HitterStats(pa=600, ab=540, r=80, hr=20, rbi=70,
+                                  sbn=10, obp=0.350, slg=0.450), valuation=v)
+
+        dual = _mk("dual", "1B", 15.0, 20.0)
+        b1_filler = _mk("b1", "1B", 30.0, 1.0)
+        below_next = _mk("below", "", 0.0, -2.0, util_tier="BELOW_REPLACEMENT")
+
+        b1 = PositionPool(position="1B", role="HITTER", roster_slots=2)
+        b1.rostered_players = [dual, b1_filler]
+        util = PositionPool(position="UTIL", role="HITTER", roster_slots=1)
+        util.rostered_players = [dual]
+        util.below_replacement = [below_next]
+
+        moved = _reconcile_final_sort_util_dupes({"1B": b1, "UTIL": util})
+        assert moved == 1
+        assert dual not in util.rostered_players
+        assert below_next in util.rostered_players  # promoted from below
+        assert below_next not in util.below_replacement
 
     def test_reconcile_tolerates_missing_and_single_pool(self):
         """``_reconcile_pool_membership`` is a no-op when no player is

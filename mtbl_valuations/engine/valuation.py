@@ -316,6 +316,66 @@ _TIER_RANK = {
 }
 
 
+def finalize_tiers_by_dollars(pools: dict[str, PositionPool]) -> int:
+    """Hard final tier cut by per-pool ``$``: top ``roster_slots`` →
+    ROSTERED, next ``len(RLP)`` → REPLACEMENT, rest → BELOW_REPLACEMENT.
+
+    Guarantees no replacement/below player out-values a rostered one — the
+    rank-vs-dollar divergence the swap-pass only *softly* resolves (tiers
+    set by total_z rank, dollars by signed-z × $/Z, which can reorder).
+
+    Runs AFTER budget allocation + distribution have settled, and does NOT
+    re-allocate: budgets were cut on the z-settled tiers, and this final
+    ordering is intentionally asympathetic to the overall budget, so
+    rostered ``$`` may no longer sum exactly to the pool budget. That skew
+    is accepted — the invariant "rostered ≥ replacement in $" wins here.
+
+    Reassigns ``pool.{rostered,replacement,below}`` and mirrors the new
+    tier onto each player's ``valuations_by_position[pos].tier`` and the
+    top-level ``tier`` (when this is their primary pool). Returns the
+    number of players whose tier changed.
+    """
+    changed = 0
+    for pos, pool in pools.items():
+        members = (
+            pool.rostered_players
+            + pool.replacement_players
+            + pool.below_replacement
+        )
+        if not members:
+            continue
+        n_rost = pool.roster_slots
+        n_rlp = len(pool.replacement_players)
+
+        def dollars(p: Player) -> float:
+            pv = p.valuation.valuations_by_position.get(pos)
+            return pv.total_dollars if pv else p.valuation.total_dollars
+
+        ordered = sorted(members, key=dollars, reverse=True)
+        new_rost = ordered[:n_rost]
+        new_rlp = ordered[n_rost : n_rost + n_rlp]
+        new_below = ordered[n_rost + n_rlp :]
+        pool.rostered_players = new_rost
+        pool.replacement_players = new_rlp
+        pool.below_replacement = new_below
+
+        for tier_name, group in (
+            ("ROSTERED", new_rost),
+            ("REPLACEMENT", new_rlp),
+            ("BELOW_REPLACEMENT", new_below),
+        ):
+            for p in group:
+                pv = p.valuation.valuations_by_position.get(pos)
+                prior = pv.tier if pv is not None else p.valuation.tier
+                if pv is not None:
+                    pv.tier = tier_name  # type: ignore[assignment]
+                if p.valuation.primary_position == pos:
+                    p.valuation.tier = tier_name  # type: ignore[assignment]
+                if prior != tier_name:
+                    changed += 1
+    return changed
+
+
 def compute_shadow_valuations(
     pools: dict[str, PositionPool],
     league_settings: dict[str, Any],
