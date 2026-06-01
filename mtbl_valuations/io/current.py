@@ -179,7 +179,17 @@ def load_pitchers_current(
         # primary-SPs that can't be per-start-normalized at all, and
         # filters insufficient-sample starters whose ``outs`` is all
         # long-relief without enough starts to be priced as a starter.
-        if role == "SP" and gs < qualified_gs:
+        #
+        # The tie-to-RP rule (svhd >= gs) routes a declared SP into RP on a
+        # pure tie — commonly GS == SVHD == 0, a rehabbing starter with no
+        # relief saves/holds. That's still an insufficient starter sample
+        # with no genuine relief signal, so it must clear the same gate
+        # rather than slip into the RP pool and drag its SVHD/rate
+        # baselines. A declared SP with svhd > gs (real relief conversion)
+        # is NOT caught — that's a genuine reliever.
+        below_starter_gate = gs < qualified_gs
+        tie_into_rp = role == "RP" and primary_pos == "SP" and gs == svhd
+        if below_starter_gate and (role == "SP" or tie_into_rp):
             skipped += 1
             continue
 
