@@ -136,12 +136,17 @@ def _is_rankable(key: str, value: Any) -> bool:
 def _percentile_rank(sorted_values: list[float], value: float) -> float:
     """Fractional rank in ``[0.0, 1.0]`` of ``value`` within an ascending
     sorted population. Ties land on the lower-bound side (bisect_left).
-    Population <= 1 collapses to 0.5 (no meaningful rank)."""
+    Population <= 1 collapses to 0.5 (no meaningful rank).
+
+    Ranking is *open*: callers inject ranks into every record, not just the
+    population, so an out-of-population value above the population max yields
+    ``idx == n`` → ``n / (n - 1) > 1.0``. Clamp to ``[0.0, 1.0]`` to keep the
+    percentile contract (and the post-inversion ``1 - pct``) bounded."""
     n = len(sorted_values)
     if n <= 1:
         return 0.5
     idx = bisect.bisect_left(sorted_values, value)
-    return idx / (n - 1)
+    return min(1.0, idx / (n - 1))
 
 
 def _enrich_pitch_arsenal(

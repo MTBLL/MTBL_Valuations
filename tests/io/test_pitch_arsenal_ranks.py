@@ -65,6 +65,45 @@ def test_arsenal_pitcher_run_value_not_inverted() -> None:
     assert lo["run_value_pct_rnk"] == 0.0
 
 
+def test_arsenal_open_ranked_value_clamped_to_unit_interval() -> None:
+    """Ranking is open — an out-of-population pitch above the qualified max
+    must not produce a pct_rnk outside [0, 1].
+
+    The lone population pitcher sets the FF distribution; the out-of-pop
+    pitcher's higher raw value would land at idx == n → n/(n-1) > 1 without
+    the clamp. After lower-better inversion that would go negative, so this
+    pins both ends: a higher-better field clamps at 1.0, a lower-better one
+    (post-inversion of an above-max value) clamps at 0.0.
+    """
+    pitchers = [
+        # In-population: two FF entries define the distribution (n=2 so the
+        # rank isn't the single-value 0.5 fallback).
+        _arsenal_record(
+            "pop_lo",
+            [{"pitch_type": "FF", "pitch_usage_pct": 20.0, "wOBA": 0.200}],
+        ),
+        _arsenal_record(
+            "pop_hi",
+            [{"pitch_type": "FF", "pitch_usage_pct": 30.0, "wOBA": 0.300}],
+        ),
+        # Out-of-population: raw values exceed the population max.
+        _arsenal_record(
+            "fringe",
+            [{"pitch_type": "FF", "pitch_usage_pct": 99.0, "wOBA": 0.900}],
+        ),
+    ]
+    inject_savant_pct_rnks([], pitchers, set(), {"pop_lo", "pop_hi"})
+    fringe = pitchers[2]["stats"]["savant"]["pitch_arsenal"][0]
+    # Higher-better usage above the max clamps to the top of the interval.
+    assert fringe["pitch_usage_pct_pct_rnk"] == 1.0
+    # Lower-better wOBA above the max would overflow then invert negative —
+    # clamp keeps it at the floor.
+    assert fringe["wOBA_pct_rnk"] == 0.0
+    for k, v in fringe.items():
+        if k.endswith("_pct_rnk"):
+            assert 0.0 <= v <= 1.0
+
+
 def test_arsenal_batter_orientation_flips() -> None:
     """In the batter file the same fields invert: the hitter's own ``wOBA``
     is higher-better, while ``whiff_pct`` / ``put_away_pct`` are lower-better.
