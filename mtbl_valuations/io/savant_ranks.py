@@ -30,6 +30,12 @@ from __future__ import annotations
 import bisect
 from typing import Any
 
+# ``stats.savant.pitch_arsenal`` is a list (one dict per pitch type),
+# unlike the scalar dict sub-blocks. Its per-pitch fields are ranked
+# WITHIN pitch type using this group key.
+_ARSENAL_BLOCK = "pitch_arsenal"
+_ARSENAL_GROUP_KEY = "pitch_type"
+
 # Non-stat fields that look numeric but aren't rankable.
 _META_SKIP = frozenset(
     {
@@ -51,6 +57,11 @@ _HITTER_LOWER_BETTER = frozenset(
         "K_pct",          # less strikeouts as a hitter
         "swing_miss_pct", # whiff less
         "B_SO",           # ESPN strikeouts counting
+        # pitch_arsenal (batter view): whiffing / getting put away on a
+        # given pitch is bad for the hitter. Same keys are lower-better in
+        # any scalar hitter block too (their own whiff / put-away rate).
+        "whiff_pct",
+        "put_away_pct",
     }
 )
 
@@ -125,12 +136,101 @@ def _is_rankable(key: str, value: Any) -> bool:
 def _percentile_rank(sorted_values: list[float], value: float) -> float:
     """Fractional rank in ``[0.0, 1.0]`` of ``value`` within an ascending
     sorted population. Ties land on the lower-bound side (bisect_left).
-    Population <= 1 collapses to 0.5 (no meaningful rank)."""
+    Population <= 1 collapses to 0.5 (no meaningful rank).
+
+    Ranking is *open*: callers inject ranks into every record, not just the
+    population, so an out-of-population value above the population max yields
+    ``idx == n`` → ``n / (n - 1) > 1.0``. Clamp to ``[0.0, 1.0]`` to keep the
+    percentile contract (and the post-inversion ``1 - pct``) bounded."""
     n = len(sorted_values)
     if n <= 1:
         return 0.5
     idx = bisect.bisect_left(sorted_values, value)
-    return idx / (n - 1)
+    return min(1.0, idx / (n - 1))
+
+
+def _enrich_pitch_arsenal(
+    records: list[dict[str, Any]],
+    population_ids: set[str],
+    lower_better: frozenset[str],
+) -> int:
+    """Rank the per-pitch fields inside ``stats.savant.pitch_arsenal``.
+
+    ``pitch_arsenal`` is a *list* of per-pitch-type dicts, so the dict-only
+    pass in ``_enrich_records`` skips it. Each field is ranked WITHIN its
+    pitch type — a slider's wOBA is compared only against other sliders,
+    never against fastballs — so the distribution key is
+    ``(pitch_type, field)``.
+
+    Orientation reuses the same role-based ``lower_better`` inversion as the
+    scalar blocks. The block is perspective-relative: in the *pitcher* file
+    it's contact allowed (``wOBA``/``AVG``/``SLG`` lower-better, ``whiff_pct``/
+    ``put_away_pct`` higher-better); in the *batter* file the same physical
+    fields flip (the hitter's own results — ``wOBA``/``AVG`` higher-better,
+    ``whiff_pct``/``put_away_pct`` lower-better). ``run_value`` is good-when-
+    high for both perspectives, so it's in neither set. Usage/volume fields
+    (``pitches``, ``pitch_usage_pct``, ``PA``) rank neutrally (high = more).
+
+    Returns the count of distinct (pitch_type, field) pairs ranked.
+    """
+    # 1) Collect per-(pitch_type, field) population values.
+    field_values: dict[tuple[str, str], list[float]] = {}
+    for record in records:
+        rid = str(record.get("id_espn"))
+        if rid not in population_ids:
+            continue
+        savant = record.get("stats", {}).get("savant")
+        if not isinstance(savant, dict):
+            continue
+        arsenal = savant.get(_ARSENAL_BLOCK)
+        if not isinstance(arsenal, list):
+            continue
+        for entry in arsenal:
+            if not isinstance(entry, dict):
+                continue
+            ptype = entry.get(_ARSENAL_GROUP_KEY)
+            if ptype is None:
+                continue
+            for field, value in entry.items():
+                if not _is_rankable(field, value):
+                    continue
+                field_values.setdefault((ptype, field), []).append(
+                    float(value)
+                )
+
+    for key in field_values:
+        field_values[key].sort()
+
+    # 2) Inject pct_rnks into every record's arsenal entries (open ranking —
+    #    non-population pitchers still land somewhere in the distribution).
+    for record in records:
+        savant = record.get("stats", {}).get("savant")
+        if not isinstance(savant, dict):
+            continue
+        arsenal = savant.get(_ARSENAL_BLOCK)
+        if not isinstance(arsenal, list):
+            continue
+        for entry in arsenal:
+            if not isinstance(entry, dict):
+                continue
+            ptype = entry.get(_ARSENAL_GROUP_KEY)
+            if ptype is None:
+                continue
+            ranks_to_add: dict[str, float] = {}
+            for field, value in list(entry.items()):
+                if not _is_rankable(field, value):
+                    continue
+                vals = field_values.get((ptype, field))
+                if not vals:
+                    continue
+                pct = _percentile_rank(vals, float(value))
+                if field in lower_better:
+                    pct = 1.0 - pct
+                ranks_to_add[f"{field}_pct_rnk"] = round(pct, 3)
+            if ranks_to_add:
+                entry.update(ranks_to_add)
+
+    return len(field_values)
 
 
 def _enrich_records(
@@ -198,7 +298,10 @@ def _enrich_records(
             if ranks_to_add:
                 sub_block.update(ranks_to_add)
 
-    return len(field_values)
+    # 3) pitch_arsenal is a list block, ranked separately (per pitch type).
+    arsenal_fields = _enrich_pitch_arsenal(records, population_ids, lower_better)
+
+    return len(field_values) + arsenal_fields
 
 
 def inject_savant_pct_rnks(
