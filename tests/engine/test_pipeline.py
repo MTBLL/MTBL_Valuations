@@ -325,6 +325,66 @@ class TestSwapPassUnit:
         assert dual.valuation.primary_position == "UTIL"
         assert of_filler.valuation.primary_position == "OF"
 
+    def test_reconcile_redirects_demotion_when_no_clean_rlp(self):
+        """When the preferred vacate-pool's only RLP is already rostered
+        elsewhere, the demotion redirects to the other pool rather than
+        silently leaving the first pool one player short."""
+        from mtbl_valuations.domain.models import (
+            HitterStats,
+            Player,
+            PositionPool,
+            PositionValuation,
+            Valuation,
+        )
+        from mtbl_valuations.engine.pipeline import _reconcile_pool_membership
+
+        def _mk(pid: str, of_d: float, util_d: float) -> Player:
+            v = Valuation()
+            v.valuations_by_position = {
+                "OF": PositionValuation(
+                    position="OF", normalized_z={}, total_z=0.0,
+                    total_dollars=of_d, tier="ROSTERED", position_rank=1,
+                ),
+                "UTIL": PositionValuation(
+                    position="UTIL", normalized_z={}, total_z=0.0,
+                    total_dollars=util_d, tier="ROSTERED", position_rank=1,
+                ),
+            }
+            return Player(
+                id=pid, name=pid, team="T", positions=["OF"], role="HITTER",
+                stats=HitterStats(pa=600, ab=540, r=80, hr=20, rbi=70,
+                                  sbn=10, obp=0.350, slg=0.450),
+                valuation=v,
+            )
+
+        dual = _mk("dual", of_d=9.0, util_d=18.0)
+        of_filler = _mk("of_filler", of_d=12.0, util_d=1.0)
+        # of_rlp_in_util is OF's only RLP but is also rostered in UTIL —
+        # so clean RLP for OF = []. The fix should redirect: keep OF
+        # (don't vacate it), vacate UTIL instead.
+        of_rlp_in_util = _mk("of_rlp_in_util", of_d=7.0, util_d=15.0)
+        util_clean = _mk("util_clean", of_d=1.0, util_d=10.0)
+
+        of_pool = PositionPool(position="OF", role="HITTER", roster_slots=1)
+        of_pool.rostered_players = [dual, of_filler]
+        of_pool.replacement_players = [of_rlp_in_util]
+
+        util_pool = PositionPool(position="UTIL", role="HITTER", roster_slots=1)
+        util_pool.rostered_players = [dual, of_rlp_in_util]
+        util_pool.replacement_players = [util_clean]
+
+        _reconcile_pool_membership({"OF": of_pool, "UTIL": util_pool})
+
+        # Demotion redirected to UTIL: dual stays in OF.
+        assert dual in of_pool.rostered_players
+        assert dual not in util_pool.rostered_players
+        # OF roster count unchanged (dual still there).
+        assert len(of_pool.rostered_players) == 2
+        # UTIL backfilled with clean candidate; of_rlp_in_util stays rostered.
+        assert util_clean in util_pool.rostered_players
+        assert of_rlp_in_util in util_pool.rostered_players
+        assert len(util_pool.rostered_players) == 2
+
     def test_reconcile_final_sort_util_dupes_keeps_base_promotes_next(self):
         """After the final $-sort, a hitter rostered in BOTH a base pool and
         UTIL is kept in the base pool, removed from UTIL (entry → shadow),
@@ -390,6 +450,67 @@ class TestSwapPassUnit:
         assert util_low not in util.rostered_players
         assert len(util.rostered_players) == 1
         assert util_next.valuation.valuations_by_position["UTIL"].tier == "ROSTERED"
+
+    def test_reconcile_final_sort_util_dupes_skips_base_rostered_candidate(self):
+        """UTIL promotion skips candidates already rostered in a base pool,
+        preventing a new [base, UTIL] dual-rostering on the same pass."""
+        from mtbl_valuations.domain.models import (
+            HitterStats,
+            Player,
+            PositionPool,
+            PositionValuation,
+            Valuation,
+        )
+        from mtbl_valuations.engine.pipeline import (
+            _reconcile_final_sort_util_dupes,
+        )
+
+        def _mk(pid, base_pos, base_d, util_d, util_tier="REPLACEMENT"):
+            v = Valuation()
+            v.primary_position = base_pos or "UTIL"
+            vbp = {
+                "UTIL": PositionValuation(
+                    position="UTIL", normalized_z={}, total_z=0.0,
+                    total_dollars=util_d, tier=util_tier, position_rank=1,
+                )
+            }
+            if base_pos:
+                vbp[base_pos] = PositionValuation(
+                    position=base_pos, normalized_z={}, total_z=0.0,
+                    total_dollars=base_d, tier="ROSTERED", position_rank=1,
+                )
+            v.valuations_by_position = vbp
+            return Player(
+                id=pid, name=pid, team="T",
+                positions=[p for p in (base_pos, "UTIL") if p], role="HITTER",
+                stats=HitterStats(pa=600, ab=540, r=80, hr=20, rbi=70,
+                                  sbn=10, obp=0.350, slg=0.450),
+                valuation=v,
+            )
+
+        dual = _mk("dual", "1B", base_d=15.0, util_d=20.0, util_tier="ROSTERED")
+        b1_filler = _mk("b1_filler", "1B", base_d=30.0, util_d=1.0, util_tier="ROSTERED")
+        # also_base is in UTIL's replacement but ALSO in 1B's rostered —
+        # promoting it would create a new [1B, UTIL] dual-rostering.
+        also_base = _mk("also_base", "1B", base_d=25.0, util_d=14.0)
+        # clean_next is only in UTIL's replacement — safe to promote.
+        clean_next = _mk("clean_next", "", base_d=0.0, util_d=9.0)
+
+        b1 = PositionPool(position="1B", role="HITTER", roster_slots=2)
+        b1.rostered_players = [dual, b1_filler, also_base]
+        util = PositionPool(position="UTIL", role="HITTER", roster_slots=1)
+        util.rostered_players = [dual]
+        # also_base ($14) has higher UTIL $ than clean_next ($9),
+        # so without the filter also_base would be selected.
+        util.replacement_players = [also_base, clean_next]
+
+        moved = _reconcile_final_sort_util_dupes({"1B": b1, "UTIL": util})
+
+        assert moved == 1
+        assert dual not in util.rostered_players
+        # also_base skipped (already base-rostered); clean_next promoted.
+        assert clean_next in util.rostered_players
+        assert also_base not in util.rostered_players
 
     def test_reconcile_final_sort_util_dupes_noop_without_util(self):
         from mtbl_valuations.domain.models import PositionPool

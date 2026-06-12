@@ -1067,18 +1067,28 @@ def _reconcile_pool_membership(
             if pos == keep:
                 continue
             pool = hitter_pools[pos]
+            # Compute clean RLP candidates BEFORE demoting — we need the
+            # candidate list to decide whether this demotion is safe. Skip
+            # players already rostered in another pool (promoting a
+            # dual-rostered RLP candidate would immediately create a new
+            # dual-rostered player and re-enter the oscillation cycle). If
+            # no clean candidate exists, redirect the demotion to the other
+            # pool (update keep) to avoid silently shrinking this pool's
+            # rostered count.
+            rlp_candidates = [
+                q for q in pool.replacement_players
+                if q.id != pid and q.id not in membership
+            ]
+            if not rlp_candidates:
+                keep = pos
+                continue
             pool.rostered_players.remove(p)
             pool.replacement_players.append(p)
-            # Promote that pool's best RLP to keep the rostered count.
-            rlp_candidates = [
-                q for q in pool.replacement_players if q.id != pid
-            ]
-            if rlp_candidates:
-                best = max(
-                    rlp_candidates, key=lambda q: per_pos_dollars(q, pos)
-                )
-                pool.replacement_players.remove(best)
-                pool.rostered_players.append(best)
+            best = max(
+                rlp_candidates, key=lambda q: per_pos_dollars(q, pos)
+            )
+            pool.replacement_players.remove(best)
+            pool.rostered_players.append(best)
 
     # Sync primary_position to the (now unique) rostered pool.
     for pos, pool in hitter_pools.items():
@@ -1134,8 +1144,14 @@ def _reconcile_final_sort_util_dupes(
         dup_pv = dup.valuation.valuations_by_position.get("UTIL")
         if dup_pv is not None:
             dup_pv.shadow = True
-        # Promote UTIL's best non-rostered (next man up).
-        candidates = util.replacement_players + util.below_replacement
+        # Promote UTIL's best non-rostered (next man up). Skip players
+        # already rostered in a base pool — promoting them would create a
+        # new [base, UTIL] dual-rostering that this same loop must then
+        # undo, wasting iterations and potentially cycling.
+        candidates = [
+            c for c in util.replacement_players + util.below_replacement
+            if c.id not in base_rostered
+        ]
         if candidates:
             best = max(candidates, key=util_dollars)
             if best in util.replacement_players:
