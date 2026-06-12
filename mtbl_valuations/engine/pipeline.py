@@ -1070,8 +1070,13 @@ def _reconcile_pool_membership(
             pool.rostered_players.remove(p)
             pool.replacement_players.append(p)
             # Promote that pool's best RLP to keep the rostered count.
+            # Skip players already rostered in another pool — promoting a
+            # dual-rostered RLP candidate would create a new cycle (the
+            # newly-promoted player would immediately appear as dual-rostered
+            # in the next iteration, recreating the same oscillation).
             rlp_candidates = [
-                q for q in pool.replacement_players if q.id != pid
+                q for q in pool.replacement_players
+                if q.id != pid and q.id not in membership
             ]
             if rlp_candidates:
                 best = max(
